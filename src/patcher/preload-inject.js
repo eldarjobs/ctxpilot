@@ -11,7 +11,6 @@ function installCtxPilotOverviewHub() {
     let fixInput = '';
     let statusMsg = '';
     let statusTimer = null;
-    let barCollapsed = localStorage.getItem('ctxPilotBarCollapsed') === '1';
     let open = { mcp: true, doctor: false, cli: true, prompts: false, fixes: false, rules: false, hooks: false, skills: false, tokens: false };
     try { Object.assign(open, JSON.parse(localStorage.getItem('ctxPilotOpen') || '{}')); } catch {}
 
@@ -28,7 +27,7 @@ function installCtxPilotOverviewHub() {
 
     function findChatInput() {
         const hub = document.getElementById('ctxpilot-overview-hub');
-        const bar = document.getElementById('ctxpilot-action-bar');
+        const bar = document.getElementById('ctxpilot-inline-actions');
         for (const el of document.querySelectorAll('textarea, [contenteditable="true"]')) {
             if ((hub && hub.contains(el)) || (bar && bar.contains(el))) continue;
             const r = el.getBoundingClientRect();
@@ -54,7 +53,7 @@ function installCtxPilotOverviewHub() {
 
     function findNewChatButton() {
         const hub = document.getElementById('ctxpilot-overview-hub');
-        const bar = document.getElementById('ctxpilot-action-bar');
+        const bar = document.getElementById('ctxpilot-inline-actions');
         for (const el of document.querySelectorAll('button, [role="button"]')) {
             if ((hub && hub.contains(el)) || (bar && bar.contains(el))) continue;
             const hint = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${(el.textContent || '').trim()}`;
@@ -258,25 +257,54 @@ function installCtxPilotOverviewHub() {
             <div style="display:flex;justify-content:space-between;${S.muted}"><span>Last ${history.length} chats</span><span>hover bar for details</span></div>`;
     }
 
+    function findInlineActionAnchor() {
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const bar = document.getElementById('ctxpilot-inline-actions');
+        let bestReview = null;
+        for (const btn of document.querySelectorAll('button, [role="button"]')) {
+            if ((hub && hub.contains(btn)) || (bar && bar.contains(btn))) continue;
+            if ((btn.textContent || '').trim() !== 'Review') continue;
+            let box = btn.parentElement;
+            for (let i = 0; i < 4 && box; i++, box = box.parentElement) {
+                if (/\bfiles?\s+changed\b/i.test(box.textContent || '')) {
+                    bestReview = { parent: btn.parentElement, before: btn, inReviewRow: true };
+                    break;
+                }
+            }
+        }
+        if (bestReview) return bestReview;
+
+        // Fallback when no "files changed" bar is visible: attach beside the last message feedback row
+        let bestFeedback = null;
+        for (const el of document.querySelectorAll('button, [role="button"]')) {
+            if (hub && hub.contains(el)) continue;
+            const hint = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`;
+            if (/good|bad|thumb|like|dislike|upvote|downvote/i.test(hint) && el.parentElement) {
+                bestFeedback = el.parentElement;
+            }
+        }
+        if (bestFeedback && bestFeedback.parentElement) {
+            return { parent: bestFeedback.parentElement, before: bestFeedback, inReviewRow: false };
+        }
+        return null;
+    }
+
     function renderActionBar() {
         if (!document.body || !state) return;
-        const input = findChatInput();
-        let bar = document.getElementById('ctxpilot-action-bar');
-        if (!input) { if (bar) bar.style.display = 'none'; return; }
-        const rect = input.getBoundingClientRect();
-        if (rect.top < 40 || rect.bottom > window.innerHeight) { if (bar) bar.style.display = 'none'; return; }
+        const anchor = findInlineActionAnchor();
+        let bar = document.getElementById('ctxpilot-inline-actions');
+        if (!anchor || !anchor.parent) { if (bar) bar.remove(); return; }
 
         if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'ctxpilot-action-bar';
-            bar.style.cssText = 'position:fixed;z-index:9999;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:4px 7px;background:rgba(20,20,22,.92);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.35);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
+            bar = document.createElement('span');
+            bar.id = 'ctxpilot-inline-actions';
+            bar.style.cssText = 'display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;margin-right:6px;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
             bar.addEventListener('mousedown', e => e.stopPropagation());
-            document.body.appendChild(bar);
+            bar.addEventListener('click', e => e.stopPropagation());
         }
-        bar.style.display = 'flex';
-        bar.style.left = `${Math.max(8, Math.round(rect.left))}px`;
-        bar.style.bottom = `${Math.max(8, Math.round(window.innerHeight - rect.top + 8))}px`;
-        bar.style.maxWidth = `${Math.max(260, Math.round(rect.width))}px`;
+        if (bar.parentElement !== anchor.parent || bar.nextSibling !== anchor.before) {
+            anchor.parent.insertBefore(bar, anchor.before);
+        }
 
         const m = state.meta || {};
         const d = state.doctor || { summary: {}, findings: [] };
@@ -287,51 +315,32 @@ function installCtxPilotOverviewHub() {
         const docIssue = (d.findings || []).find(f => f.level === 'FAIL' || f.level === 'WARN');
         const subTopic = sig.issueTopic || (docIssue ? `${docIssue.category}: ${docIssue.message}` : '');
 
-        const key = JSON.stringify([barCollapsed, m.dirtyCount, m.mapFile, ctxPct, sig, docIssue?.message, (state.fixes || []).length, statusMsg]);
+        const key = JSON.stringify([anchor.inReviewRow, m.dirtyCount, m.mapFile, ctxPct, sig.asksProceed, subTopic, docIssue?.message, statusMsg]);
         if (bar.dataset.key === key) return;
         bar.dataset.key = key;
-
-        if (barCollapsed) {
-            bar.innerHTML = `<button id="cp-bar-tgl" style="${S.ghost}" title="Expand CtxPilot Action Bar">CtxPilot${ctxPct >= 65 ? ` (${ctxPct}%)` : ''}</button>`;
-            const tgl = bar.querySelector('#cp-bar-tgl');
-            if (tgl) tgl.onclick = () => { barCollapsed = false; try { localStorage.setItem('ctxPilotBarCollapsed', '0'); } catch {} bar.dataset.key = ''; renderActionBar(); };
-            return;
-        }
 
         const pill = (id, label, style, title) => `<button id="${id}" title="${esc(title)}" style="${style}font-size:10px;padding:2px 7px;white-space:nowrap;">${esc(label)}</button>`;
         const warnBtn = 'background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.45);color:#fbbf24;border-radius:4px;font-weight:600;cursor:pointer;';
         const okBtn = 'background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.45);color:#34d399;border-radius:4px;font-weight:600;cursor:pointer;';
 
         const actions = [];
-        actions.push(pill('cp-bar-proceed', 'Proceed', sig.asksProceed ? S.btn : S.ghost, 'Send "Proceed with the next step."'));
+        if (sig.asksProceed) actions.push(pill('cp-bar-proceed', 'Proceed', S.btn, 'Send "Proceed with the next step."'));
         if (m.dirtyCount > 0) actions.push(pill('cp-bar-commit', `Commit & Push (${m.dirtyCount})`, okBtn, 'Ask agent to review diff, commit, and push'));
         if (subTopic || d.summary?.warn || d.summary?.fail) actions.push(pill('cp-bar-subchat', 'Sub-Chat: Investigate', warnBtn, `Isolate issue in a Sub-Chat: ${subTopic || 'doctor warning'}`));
-        else actions.push(pill('cp-bar-subchat', 'Sub-Chat', S.ghost, 'Open an isolated Sub-Chat'));
-        if (sig.fixHint) actions.push(pill('cp-bar-savefix', '+ Save Fix', S.ghost, `Save to FIXES: ${sig.fixHint}`));
-        if (ctxPct >= 65) actions.push(pill('cp-bar-handoff', `Handoff -> New Chat (${ctxPct}%)`, warnBtn, 'Context is high — compact into a lean New Chat handoff'));
+        else actions.push(pill('cp-bar-subchat', 'Sub-Chat', S.ghost, 'Start an isolated Sub-Chat for a side task'));
+        if (ctxPct >= 65) actions.push(pill('cp-bar-handoff', `Handoff (${ctxPct}%)`, warnBtn, 'Context is high — compact into a lean New Chat handoff'));
+        if (!anchor.inReviewRow && m.mapFile) actions.push(pill('cp-inj-map', `+${m.mapFile}`, S.ghost, `Insert ${m.mapFile} context into chat`));
+        if (!anchor.inReviewRow && m.dirtyCount > 0) actions.push(pill('cp-inj-diff', '+git diff', S.ghost, 'Insert git status & diff stat into chat'));
 
-        const injects = [];
-        if (m.mapFile) injects.push(pill('cp-inj-map', `+${m.mapFile}`, S.ghost, `Insert ${m.mapFile} context`));
-        if (m.dirtyCount > 0) injects.push(pill('cp-inj-diff', '+git diff', S.ghost, 'Insert git status & diff stat'));
-        if ((state.fixes || []).length > 0) injects.push(pill('cp-inj-fixes', `+Fixes (${state.fixes.length})`, S.ghost, 'Insert saved workspace fixes'));
-
-        const sep = injects.length ? '<span style="width:1px;height:14px;background:rgba(255,255,255,.12);margin:0 2px;"></span>' : '';
         const msgChip = statusMsg ? `<span style="font-size:10px;color:#34d399;padding:0 4px;">${esc(statusMsg)}</span>` : '';
-        bar.innerHTML = `${actions.join('')}${sep}${injects.join('')}${msgChip}<button id="cp-bar-tgl" title="Collapse action bar" style="background:transparent;border:none;color:#71717a;font-size:11px;cursor:pointer;padding:0 3px;">-</button>`;
+        bar.innerHTML = `${actions.join('')}${msgChip}`;
 
-        const bind = (id, fn) => { const el = bar.querySelector(id); if (el) el.onclick = fn; };
-        bind('#cp-bar-tgl', () => { barCollapsed = true; try { localStorage.setItem('ctxPilotBarCollapsed', '1'); } catch {} bar.dataset.key = ''; renderActionBar(); });
+        const bind = (id, fn) => { const el = bar.querySelector(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
         bind('#cp-bar-proceed', () => sendPrompt('Proceed with the next step.'));
         bind('#cp-bar-commit', () => sendPrompt('Review git status and diff, commit the relevant changes cleanly, and push to origin.'));
         bind('#cp-bar-subchat', async () => {
             const res = await invoke('ctxpilot:subchat', { topic: subTopic });
             if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`);
-        });
-        bind('#cp-bar-savefix', async () => {
-            if (!sig.fixHint) return;
-            const convId = t && t.convId;
-            state = await invoke('ctxpilot:add-fix', { title: sig.fixHint, convId }) || state;
-            flashStatus('Saved fix to FIXES');
         });
         bind('#cp-bar-handoff', async () => {
             const res = await invoke('ctxpilot:handoff', {});
@@ -343,7 +352,6 @@ function installCtxPilotOverviewHub() {
         };
         bind('#cp-inj-map', inject('map'));
         bind('#cp-inj-diff', inject('diff'));
-        bind('#cp-inj-fixes', inject('fixes'));
     }
 
     function render(force) {
