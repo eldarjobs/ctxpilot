@@ -344,7 +344,7 @@ function getChatSignals(opts = {}) {
                 }
             } catch {}
         }
-        const parentMatch = firstUser.match(/# Isolated Sub-Chat \(branched from ([a-f0-9-]+)\)/i);
+        const parentMatch = firstUser.match(/# (?:Isolated|Forked) Sub-Chat \((?:branched )?from ([a-f0-9-]+)[^)]*\)/i);
         const isSubChat = Boolean(parentMatch);
         const parentConvId = parentMatch ? parentMatch[1] : '';
         if (!lastText) return { ...empty, isSubChat, parentConvId };
