@@ -1,0 +1,21 @@
+{
+  "command": "node",
+  "args": ["server.mjs"],
+  "restart_policy": "always",
+  "display_name": "CtxPilot",
+  "description": "Live context budget breakdown, MCP park/RO toggles, secret doctor, and rules/hooks manager.",
+  "has_web_ui": true,
+  "agent_permissions": {
+    "allows_user_interactions": false
+  },
+  "ui_config": {
+    "display_name": "CtxPilot",
+    "views": [
+      {
+        "path": "/",
+        "entrypoint": "SIDECAR_UI_ENTRYPOINT_AUX_PANE",
+        "title": "CtxPilot"
+      }
+    ]
+  }
+}

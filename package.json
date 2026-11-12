@@ -1,13 +1,15 @@
 {
   "name": "ctxpilot",
-  "version": "0.1.0",
-  "description": "Unofficial read-only context budget analyzer, MCP health checker, and secret leak scanner for Antigravity workspaces.",
+  "version": "0.2.0",
+  "description": "Unofficial context budget analyzer, MCP profile & RO/RW manager, secret hygiene doctor, and zero-patch Sidecar UI for Antigravity workspaces.",
   "bin": {
-    "ctxpilot": "./bin/ctxpilot.js"
+    "ctxpilot": "./bin/ctxpilot.js",
+    "ctx": "./bin/ctxpilot.js"
   },
   "files": [
     "bin/",
     "src/",
+    "plugin/",
     "LICENSE",
     "README.md",
     "SECURITY.md"

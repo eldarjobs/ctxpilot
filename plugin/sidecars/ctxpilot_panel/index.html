@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CtxPilot</title>
+<style>
+  :root {
+    --bg: var(--background, #121215);
+    --card: rgba(255, 255, 255, .04);
+    --border: rgba(255, 255, 255, .09);
+    --fg: var(--foreground, #e4e4e7);
+    --muted: #8b8b95;
+    --blue: #3b82f6;
+    --green: #10b981;
+    --amber: #f59e0b;
+    --red: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 12px; background: var(--bg); color: var(--fg); font: 12px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 8px; }
+  .title { font-weight: 700; font-size: 13px; letter-spacing: .2px; }
+  .ws { font-size: 10px; color: var(--muted); font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .sec { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 8px; }
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+  .row:last-child { border-bottom: none; }
+  .btn { background: rgba(59,130,246,.15); border: 1px solid rgba(59,130,246,.4); color: #60a5fa; border-radius: 5px; padding: 3px 8px; font-size: 11px; font-weight: 600; cursor: pointer; }
+  .ghost { background: transparent; border: 1px solid var(--border); color: var(--fg); border-radius: 5px; padding: 2px 7px; font-size: 10px; cursor: pointer; }
+  .badge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--border); }
+  .ok { color: var(--green); border-color: rgba(16,185,129,.4); background: rgba(16,185,129,.1); }
+  .warn { color: var(--amber); border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); }
+  .fail { color: var(--red); border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.12); }
+  .bar { height: 6px; background: rgba(255,255,255,.08); border-radius: 3px; overflow: hidden; margin: 4px 0 6px; }
+  .bar > div { height: 100%; background: var(--blue); }
+  .tgl { width: 28px; height: 16px; border-radius: 9px; background: #27272a; position: relative; cursor: pointer; flex: none; }
+  .tgl.on { background: var(--blue); }
+  .tgl::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: #fff; position: absolute; top: 2px; left: 2px; transition: left .15s; }
+  .tgl.on::after { left: 14px; }
+  .banner { font-size: 11px; color: var(--amber); background: rgba(245,158,11,.1); border: 1px solid rgba(245,158,11,.35); border-radius: 6px; padding: 6px 8px; margin-bottom: 10px; }
+  .mono { font-family: monospace; font-size: 11px; }
+  .muted { color: var(--muted); font-size: 10px; }
+  .profiles { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div id="app">Loading CtxPilot...</div>
+<script src="/preload.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const api = (path, opts) => (window.sidecar?.fetch ? window.sidecar.fetch(path, opts) : fetch(path, opts)).then(r => r.json());
+
+let snap = null;
+async function refresh() {
+  snap = await api('/api/state', { method: 'GET' });
+  render();
+}
+async function act(payload) {
+  snap = await api('/api/action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  render();
+}
+
+function render() {
+  if (!snap) return;
+  const c = snap.context;
+  const d = snap.doctor;
+  const activeCount = snap.servers.filter(s => !s.parked).length;
+  const maxMcp = Math.max(1, ...c.mcp.servers.map(s => s.tokensEst));
+
+  const banner = snap.restartPending
+    ? '<div class="banner">MCP configuration updated. Restart Antigravity to load or unload servers.</div>'
+    : '';
+
+  const profilesHtml = snap.profiles.map(p =>
+    `<button class="ghost" onclick="act({action:'profile',profile:'${esc(p.id)}'})" title="${esc(p.description)}">${esc(p.id)}</button>`
+  ).join('');
+
+  const mcpHtml = snap.servers.map(s => {
+    const schemaInfo = c.mcp.servers.find(m => m.id === s.id);
+    const est = schemaInfo && schemaInfo.tokensEst ? `~${schemaInfo.tokensEst.toLocaleString()} tok` : (s.parked ? 'parked' : '0 schemas');
+    const roBtn = s.readonly !== null
+      ? `<button class="badge ${s.readonly ? 'ok' : 'warn'}" style="cursor:pointer" onclick="act({action:'toggle-ro',id:'${esc(s.id)}',enabled:${!s.readonly}})">${s.readonly ? 'RO' : 'RW'}</button>`
+      : '';
+    const tgl = s.configurable
+      ? `<div class="tgl ${s.parked ? '' : 'on'}" onclick="act({action:'${s.parked ? 'unpark' : 'park'}',id:'${esc(s.id)}'})"></div>`
+      : `<span class="muted">plugin</span>`;
+    return `<div class="row">
+      <div style="min-width:0;flex:1">
+        <div class="mono" style="font-weight:600">${esc(s.id)} <span class="muted">(${s.toolCount} tools · ${est})</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px">${roBtn}${tgl}</div>
+    </div>`;
+  }).join('');
+
+  const docRows = d.findings.filter(f => f.level !== 'OK').concat(d.findings.filter(f => f.level === 'OK').slice(0, 4)).map(f =>
+    `<div class="row">
+      <span class="badge ${f.level.toLowerCase()}">${f.level}</span>
+      <span class="mono" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(f.message)}">${esc(f.target.split(/[\\/]/).pop())}: ${esc(f.message)}</span>
+    </div>`
+  ).join('');
+
+  const suggestHtml = d.suggestions.length
+    ? `<div style="margin-top:6px;font-size:10px;color:var(--amber)">Suggested fixes:<br>${d.suggestions.map(s => `<code>${esc(s.serverId)}.${esc(s.location)}: ${esc(s.snippet)}</code>`).join('<br>')}</div>`
+    : '';
+
+  const rulesHtml = snap.rules.map(r =>
+    `<div class="row">
+      <span class="mono" style="${r.enabled ? '' : 'text-decoration:line-through;color:var(--muted)'}">${esc(r.name)} <span class="muted">${esc(r.trigger)}</span></span>
+      <div class="tgl ${r.enabled ? 'on' : ''}" onclick="act({action:'toggle-rule',name:'${esc(r.name)}',enabled:${!r.enabled}})"></div>
+    </div>`
+  ).join('') || '<div class="muted">No project rules in .agents/rules/</div>';
+
+  const hooksHtml = snap.hooks.map(h =>
+    `<div class="row">
+      <span class="mono">${esc(h.name)} <span class="muted">(${esc(h.events.join(', '))})</span></span>
+      <div class="tgl ${h.enabled ? 'on' : ''}" onclick="act({action:'toggle-hook',name:'${esc(h.name)}',enabled:${!h.enabled}})"></div>
+    </div>`
+  ).join('') || '<div class="muted">No .agents/hooks.json found</div>';
+
+  $('app').innerHTML = `
+    <div class="head">
+      <div style="min-width:0">
+        <div class="title">CtxPilot</div>
+        <div class="ws" title="${esc(snap.workspace)}">${esc(snap.workspace)}</div>
+      </div>
+      <button class="btn" onclick="refresh()">Refresh</button>
+    </div>
+    ${banner}
+    <div class="card">
+      <div class="sec"><span>Context Budget (est +/-20%)</span><span>~${c.staticOverheadTokensEst.toLocaleString()} tok static</span></div>
+      <div class="row"><span>Always-On Rules (${c.rules.alwaysOnCount})</span><span class="mono">~${c.rules.alwaysOnTokensEst.toLocaleString()} tok</span></div>
+      <div class="row"><span>Active MCP Schemas (${c.mcp.activeServerCount})</span><span class="mono">~${c.mcp.totalTokensEst.toLocaleString()} tok (${c.mcp.shareOfStaticOverheadPct}%)</span></div>
+      <div class="row"><span>Skills Metadata (${c.skills.count})</span><span class="mono">~${c.skills.tokensEst.toLocaleString()} tok</span></div>
+      ${c.transcript.available ? `<div class="row"><span>Latest Session (cache ${c.transcript.cacheHitPct}%)</span><span class="mono">${c.transcript.totalContextTokens.toLocaleString()} tok</span></div>` : ''}
+      ${c.recommendation ? `<div class="muted" style="margin-top:6px;color:#60a5fa">${esc(c.recommendation)}</div>` : ''}
+    </div>
+    <div class="card">
+      <div class="sec"><span>MCP Servers &amp; Profiles</span><span>${activeCount}/${snap.servers.length} active</span></div>
+      <div class="profiles">${profilesHtml}</div>
+      ${mcpHtml}
+    </div>
+    <div class="card">
+      <div class="sec"><span>Doctor Audit</span><span>${d.summary.ok} ok · ${d.summary.warn} warn · ${d.summary.fail} fail</span></div>
+      ${docRows}${suggestHtml}
+    </div>
+    <div class="card">
+      <div class="sec"><span>Rules</span><span>${snap.rules.filter(r => r.enabled).length}/${snap.rules.length} on</span></div>
+      ${rulesHtml}
+    </div>
+    <div class="card">
+      <div class="sec"><span>Hooks</span><span>${snap.hooks.filter(h => h.enabled).length}/${snap.hooks.length} on</span></div>
+      ${hooksHtml}
+    </div>`;
+}
+
+refresh();
+setInterval(refresh, 6000);
+</script>
+</body>
+</html>

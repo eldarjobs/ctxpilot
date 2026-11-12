@@ -2,13 +2,13 @@
 
 > **See where your context window goes, catch leaked MCP secrets, and safely cut prompt bloat — without patching the app.**
 
-`ctxpilot` is an unofficial, zero-dependency, read-only CLI diagnostic and context-budget analyzer for Antigravity workspaces (`v0.1`).
+`ctxpilot` (`ctx`) is an unofficial, zero-dependency CLI & **zero-patch Sidecar UI plugin** for Antigravity workspaces (`v0.2`).
 
 ---
 
 ## Why `ctxpilot`?
 
-- **Zero app patching:** Runs strictly read-only on your local configs (`~/.gemini/`, `.agents/`). Never modifies binaries.
+- **Zero app patching:** Never modifies `app.asar`. Runs via CLI or Antigravity's official Sidecar UI Plugin (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`).
 - **Zero telemetry:** Performs zero outbound network requests (unless you explicitly pass `--ping` to probe HTTP MCP endpoints).
 - **CI-ready secret hygiene:** Detects plaintext tokens/passwords in `mcp_config.json`, masks them with prefix-free labels (`[REDACTED: bearer-token]`), and exits non-zero on failures.
 
@@ -23,7 +23,12 @@ npx github:eldarjobs/ctxpilot doctor --fix-suggest
 npx github:eldarjobs/ctxpilot context
 ```
 
-*(Once published to npm, `npx ctxpilot doctor` and `npx ctxpilot context` work identically.)*
+Or install globally (provides both `ctxpilot` and `ctx` commands):
+
+```bash
+npm install -g github:eldarjobs/ctxpilot
+ctx ui install   # Installs zero-patch CtxPilot side-pane UI inside Antigravity
+```
 
 ---
 
@@ -93,11 +98,36 @@ Tip: Parking "mssql" (23 tools) when unused saves ~4,649 tok/turn (approx +/-20%
 
 ---
 
+### `ctx park` / `ctx unpark` / `ctx ro` / `ctx rw` / `ctx profile`
+
+Safely unload unused MCP servers to cut static prompt bloat (moves definitions to `~/.gemini/config/mcp_disabled.json`), switch DB servers between `READONLY=true/false`, and sync `.agents/rules/00-active-mcps.md`:
+
+```bash
+ctx profile list
+ctx profile code-docs --dry-run   # preview changes first
+ctx profile db-ro                 # keep DB servers in READONLY=true + serena
+ctx park mssql                    # park a single server
+ctx unpark mssql                  # restore it
+ctx ro mssql                      # enforce READONLY=true
+```
+
+### `ctx ui install` (Zero-Patch Antigravity Sidecar UI)
+
+Installs an official Antigravity Aux-Pane Sidecar Plugin at `~/.gemini/config/plugins/ctxpilot/` showing Context Budget, MCP toggles, `RO/RW` switches, Doctor findings, Rules, and Hooks right inside Antigravity — without touching `app.asar`.
+
+```bash
+ctx ui install
+ctx ui status
+ctx ui uninstall
+```
+
+---
+
 ## Roadmap
 
-- **`v0.1`** (current): Read-only `doctor` + `context` + `SECURITY.md`
-- **`v0.2`**: MCP Task Profiles (`Code & Docs`, `DB Audit RO`, `Lean`) + `--dry-run`
-- **`v0.3`**: Official Sidecar UI Plugin (zero-patch aux pane) + Hooks panel + stack presets (`nextjs`, `dotnet-clean`)
+- **`v0.1`**: Read-only `doctor` + `context` + `SECURITY.md` (done)
+- **`v0.2`** (current): `ctx` alias, MCP profiles (`full`, `code-docs`, `db-ro`, `lean`), `park/unpark/ro/rw`, `--dry-run`, zero-patch Sidecar UI plugin
+- **`v0.3`**: Stack presets (`nextjs`, `dotnet-clean`) + benchmarked hooks (`<150 ms`)
 - **`v0.4`**: Team bundle export/import with fuzz-tested secret sanitizer
 - **`v1.0`**: Optional `--experimental-asar-patch` mode, npm provenance, SBOM
 

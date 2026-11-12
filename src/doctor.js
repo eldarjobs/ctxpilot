@@ -224,7 +224,7 @@ function formatDoctor(report, opts = {}) {
     for (const f of report.findings) {
         const tag = f.level === 'OK' ? '[OK]  ' : f.level === 'WARN' ? '[WARN]' : '[FAIL]';
         const target = shortTarget(f.target, homeDir);
-        out.push(`  ${tag} ${target.padEnd(32)} ${f.message}`);
+        out.push(`  ${tag} ${target.padEnd(42)} ${f.message}`);
     }
 
     if (opts.fixSuggest && report.suggestions.length > 0) {
