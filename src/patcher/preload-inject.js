@@ -6,28 +6,84 @@ function installCtxPilotOverviewHub() {
     let skillFilter = '';
     let expandedSrv = null;
     let rendering = false;
-    let open = { mcp: true, doctor: false, cli: true, prompts: false, rules: false, hooks: false, skills: false, tokens: false };
+    let showSubChat = false;
+    let subChatTopic = '';
+    let fixInput = '';
+    let statusMsg = '';
+    let statusTimer = null;
+    let barCollapsed = localStorage.getItem('ctxPilotBarCollapsed') === '1';
+    let open = { mcp: true, doctor: false, cli: true, prompts: false, fixes: false, rules: false, hooks: false, skills: false, tokens: false };
     try { Object.assign(open, JSON.parse(localStorage.getItem('ctxPilotOpen') || '{}')); } catch {}
 
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const invoke = (ch, ...a) => electron_1.ipcRenderer.invoke(ch, ...a);
     const k = (n) => n >= 1000 ? (n >= 10000 ? Math.round(n / 1000) + 'k' : (n / 1000).toFixed(1) + 'k') : String(n);
 
-    function sendPrompt(text) {
-        const input = document.querySelector('textarea, [contenteditable="true"]');
-        if (!input) return;
+    function flashStatus(msg) {
+        statusMsg = msg;
+        clearTimeout(statusTimer);
+        statusTimer = setTimeout(() => { statusMsg = ''; render(true); }, 5500);
+        render(true);
+    }
+
+    function findChatInput() {
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const bar = document.getElementById('ctxpilot-action-bar');
+        for (const el of document.querySelectorAll('textarea, [contenteditable="true"]')) {
+            if ((hub && hub.contains(el)) || (bar && bar.contains(el))) continue;
+            const r = el.getBoundingClientRect();
+            if (r.width >= 150 && r.height >= 16) return el;
+        }
+        return null;
+    }
+
+    function insertTextIntoChat(text, replace) {
+        const input = findChatInput();
+        if (!input) return false;
         input.focus();
         if (input.tagName === 'TEXTAREA') {
-            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, text);
+            const next = replace ? text : (input.value ? input.value + (input.value.endsWith('\n') ? '' : '\n') + text : text);
+            Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, next);
             input.dispatchEvent(new Event('input', { bubbles: true }));
         } else {
-            document.execCommand('selectAll', false);
+            if (replace) document.execCommand('selectAll', false);
             document.execCommand('insertText', false, text);
         }
+        return true;
+    }
+
+    function findNewChatButton() {
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const bar = document.getElementById('ctxpilot-action-bar');
+        for (const el of document.querySelectorAll('button, [role="button"]')) {
+            if ((hub && hub.contains(el)) || (bar && bar.contains(el))) continue;
+            const hint = `${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''} ${(el.textContent || '').trim()}`;
+            if (/\bnew\s*(chat|conversation)\b/i.test(hint)) return el;
+        }
+        return null;
+    }
+
+    function openNewChatWithPrompt(text, label) {
+        try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text); } catch {}
+        const newBtn = findNewChatButton();
+        if (newBtn) {
+            newBtn.click();
+            flashStatus(`${label} copied — seeding New Chat...`);
+            setTimeout(() => { insertTextIntoChat(text, true); }, 320);
+        } else {
+            flashStatus(`${label} copied — open New Chat & Ctrl+V`);
+        }
+    }
+
+    function sendPrompt(text) {
+        if (!insertTextIntoChat(text, true)) return;
         setTimeout(() => {
             const btn = document.querySelector('button[aria-label*="Send" i], button[title*="Send" i]');
             if (btn) btn.click();
-            else input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            else {
+                const input = findChatInput();
+                if (input) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+            }
         }, 80);
     }
 
@@ -74,6 +130,7 @@ function installCtxPilotOverviewHub() {
             state.restartPending, state.doctor?.summary, state.context?.staticOverheadTokensEst,
             state.context?.transcript?.totalContextTokens, state.rules?.map(r => [r.name, r.enabled]),
             state.hooks?.map(h => [h.name, h.enabled]), state.skills?.length, state.actions,
+            state.fixes?.map(f => f.id), showSubChat, statusMsg, state.workspace, state.workspacePinned,
             state.meta, state.profileHint, state.bloatAlert, expandedSrv, open, history.map(h => [h.id, h.peak]),
         ]);
     }
@@ -103,7 +160,10 @@ function installCtxPilotOverviewHub() {
                 ${expandedSrv === s.id && s.tools.length ? `<div style="display:flex;flex-wrap:wrap;gap:3px;padding:2px 0 4px 12px;">${s.tools.map(t => `<span style="font-size:9px;font-family:monospace;color:#a1a1aa;background:rgba(255,255,255,.04);border-radius:3px;padding:1px 4px;">${esc(t)}</span>`).join('')}</div>` : ''}
             </div>`;
         }).join('');
-        const banner = state.restartPending ? `<div style="font-size:10px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:4px;padding:4px 6px;">MCP config changed. Restart Antigravity to load/unload.</div>` : '';
+        const banner = state.restartPending ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:#f59e0b;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:4px;padding:4px 6px;">
+            <span>MCP config changed. Restart to apply.</span>
+            <button id="cp-restart-app" style="background:rgba(245,158,11,.2);border:1px solid rgba(245,158,11,.45);color:#fbbf24;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;cursor:pointer;flex:none;">Restart</button>
+        </div>` : '';
         return `${banner}<div style="display:flex;flex-wrap:wrap;gap:4px;">${profiles}</div><div style="display:flex;flex-direction:column;gap:2px;max-height:180px;overflow-y:auto;">${rows}</div>`;
     }
 
@@ -164,6 +224,20 @@ function installCtxPilotOverviewHub() {
             </div>`).join('') || `<span style="${S.muted}">No .agents/hooks.json</span>`}</div>`;
     }
 
+    function fixesBody() {
+        const rows = (state.fixes || []).map(f => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 0;">
+                <span class="cp-fix-use" data-title="${esc(f.title)}" data-detail="${esc(f.detail || '')}" title="${esc((f.detail || f.title) + ' — click to insert')}" style="font-size:11px;color:#e4e4e7;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">${esc(f.title)}</span>
+                <button class="cp-fix-rm" data-id="${esc(f.id)}" title="Remove fix note" style="background:transparent;border:none;color:#71717a;font-size:11px;cursor:pointer;padding:0 3px;">x</button>
+            </div>`).join('');
+        return `
+            <div style="display:flex;gap:4px;">
+                <input id="cp-fix-input" placeholder="Save fix / root cause note..." value="${esc(fixInput)}" style="flex:1;min-width:0;background:#0c0c0e;border:1px solid rgba(255,255,255,.08);border-radius:4px;color:#e4e4e7;font-size:11px;padding:3px 6px;outline:none;">
+                <button id="cp-fix-save" style="${S.ghost}">Save</button>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:2px;max-height:110px;overflow-y:auto;">${rows || `<span style="${S.muted}">No saved fixes for this workspace.</span>`}</div>`;
+    }
+
     function skillsBody() {
         const sc = (s) => s === 'project' ? '#60a5fa' : s === 'global' ? '#a1a1aa' : '#c084fc';
         return `
@@ -184,10 +258,99 @@ function installCtxPilotOverviewHub() {
             <div style="display:flex;justify-content:space-between;${S.muted}"><span>Last ${history.length} chats</span><span>hover bar for details</span></div>`;
     }
 
+    function renderActionBar() {
+        if (!document.body || !state) return;
+        const input = findChatInput();
+        let bar = document.getElementById('ctxpilot-action-bar');
+        if (!input) { if (bar) bar.style.display = 'none'; return; }
+        const rect = input.getBoundingClientRect();
+        if (rect.top < 40 || rect.bottom > window.innerHeight) { if (bar) bar.style.display = 'none'; return; }
+
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'ctxpilot-action-bar';
+            bar.style.cssText = 'position:fixed;z-index:9999;display:flex;flex-wrap:wrap;align-items:center;gap:4px;padding:4px 7px;background:rgba(20,20,22,.92);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.1);border-radius:8px;box-shadow:0 4px 14px rgba(0,0,0,.35);font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
+            bar.addEventListener('mousedown', e => e.stopPropagation());
+            document.body.appendChild(bar);
+        }
+        bar.style.display = 'flex';
+        bar.style.left = `${Math.max(8, Math.round(rect.left))}px`;
+        bar.style.bottom = `${Math.max(8, Math.round(window.innerHeight - rect.top + 8))}px`;
+        bar.style.maxWidth = `${Math.max(260, Math.round(rect.width))}px`;
+
+        const m = state.meta || {};
+        const d = state.doctor || { summary: {}, findings: [] };
+        const t = state.context && state.context.transcript;
+        const limit = t && t.available ? (t.totalContextTokens > 260000 ? 1000000 : 250000) : 250000;
+        const ctxPct = t && t.available ? Math.min(100, Math.round(t.totalContextTokens / limit * 100)) : 0;
+        const sig = state.chatSignals || {};
+        const docIssue = (d.findings || []).find(f => f.level === 'FAIL' || f.level === 'WARN');
+        const subTopic = sig.issueTopic || (docIssue ? `${docIssue.category}: ${docIssue.message}` : '');
+
+        const key = JSON.stringify([barCollapsed, m.dirtyCount, m.mapFile, ctxPct, sig, docIssue?.message, (state.fixes || []).length, statusMsg]);
+        if (bar.dataset.key === key) return;
+        bar.dataset.key = key;
+
+        if (barCollapsed) {
+            bar.innerHTML = `<button id="cp-bar-tgl" style="${S.ghost}" title="Expand CtxPilot Action Bar">CtxPilot${ctxPct >= 65 ? ` (${ctxPct}%)` : ''}</button>`;
+            const tgl = bar.querySelector('#cp-bar-tgl');
+            if (tgl) tgl.onclick = () => { barCollapsed = false; try { localStorage.setItem('ctxPilotBarCollapsed', '0'); } catch {} bar.dataset.key = ''; renderActionBar(); };
+            return;
+        }
+
+        const pill = (id, label, style, title) => `<button id="${id}" title="${esc(title)}" style="${style}font-size:10px;padding:2px 7px;white-space:nowrap;">${esc(label)}</button>`;
+        const warnBtn = 'background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.45);color:#fbbf24;border-radius:4px;font-weight:600;cursor:pointer;';
+        const okBtn = 'background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.45);color:#34d399;border-radius:4px;font-weight:600;cursor:pointer;';
+
+        const actions = [];
+        actions.push(pill('cp-bar-proceed', 'Proceed', sig.asksProceed ? S.btn : S.ghost, 'Send "Proceed with the next step."'));
+        if (m.dirtyCount > 0) actions.push(pill('cp-bar-commit', `Commit & Push (${m.dirtyCount})`, okBtn, 'Ask agent to review diff, commit, and push'));
+        if (subTopic || d.summary?.warn || d.summary?.fail) actions.push(pill('cp-bar-subchat', 'Sub-Chat: Investigate', warnBtn, `Isolate issue in a Sub-Chat: ${subTopic || 'doctor warning'}`));
+        else actions.push(pill('cp-bar-subchat', 'Sub-Chat', S.ghost, 'Open an isolated Sub-Chat'));
+        if (sig.fixHint) actions.push(pill('cp-bar-savefix', '+ Save Fix', S.ghost, `Save to FIXES: ${sig.fixHint}`));
+        if (ctxPct >= 65) actions.push(pill('cp-bar-handoff', `Handoff -> New Chat (${ctxPct}%)`, warnBtn, 'Context is high — compact into a lean New Chat handoff'));
+
+        const injects = [];
+        if (m.mapFile) injects.push(pill('cp-inj-map', `+${m.mapFile}`, S.ghost, `Insert ${m.mapFile} context`));
+        if (m.dirtyCount > 0) injects.push(pill('cp-inj-diff', '+git diff', S.ghost, 'Insert git status & diff stat'));
+        if ((state.fixes || []).length > 0) injects.push(pill('cp-inj-fixes', `+Fixes (${state.fixes.length})`, S.ghost, 'Insert saved workspace fixes'));
+
+        const sep = injects.length ? '<span style="width:1px;height:14px;background:rgba(255,255,255,.12);margin:0 2px;"></span>' : '';
+        const msgChip = statusMsg ? `<span style="font-size:10px;color:#34d399;padding:0 4px;">${esc(statusMsg)}</span>` : '';
+        bar.innerHTML = `${actions.join('')}${sep}${injects.join('')}${msgChip}<button id="cp-bar-tgl" title="Collapse action bar" style="background:transparent;border:none;color:#71717a;font-size:11px;cursor:pointer;padding:0 3px;">-</button>`;
+
+        const bind = (id, fn) => { const el = bar.querySelector(id); if (el) el.onclick = fn; };
+        bind('#cp-bar-tgl', () => { barCollapsed = true; try { localStorage.setItem('ctxPilotBarCollapsed', '1'); } catch {} bar.dataset.key = ''; renderActionBar(); });
+        bind('#cp-bar-proceed', () => sendPrompt('Proceed with the next step.'));
+        bind('#cp-bar-commit', () => sendPrompt('Review git status and diff, commit the relevant changes cleanly, and push to origin.'));
+        bind('#cp-bar-subchat', async () => {
+            const res = await invoke('ctxpilot:subchat', { topic: subTopic });
+            if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`);
+        });
+        bind('#cp-bar-savefix', async () => {
+            if (!sig.fixHint) return;
+            const convId = t && t.convId;
+            state = await invoke('ctxpilot:add-fix', { title: sig.fixHint, convId }) || state;
+            flashStatus('Saved fix to FIXES');
+        });
+        bind('#cp-bar-handoff', async () => {
+            const res = await invoke('ctxpilot:handoff', {});
+            if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Handoff (~${res.handoffTokensEst} tok)`);
+        });
+        const inject = (kind) => async () => {
+            const txt = await invoke('ctxpilot:inject-snippet', kind);
+            if (txt) insertTextIntoChat(txt + '\n', false);
+        };
+        bind('#cp-inj-map', inject('map'));
+        bind('#cp-inj-diff', inject('diff'));
+        bind('#cp-inj-fixes', inject('fixes'));
+    }
+
     function render(force) {
         if (rendering || !document.body || !state) return;
         rendering = true;
         try {
+            renderActionBar();
             const target = findOverviewMenu();
             if (!target) return;
             const { container, anchorRow } = target;
@@ -223,14 +386,21 @@ function installCtxPilotOverviewHub() {
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
                     <span style="${S.label}">CTXPILOT</span>
                     <div style="display:flex;gap:4px;">
-                        <button id="cp-compact" style="${S.btn}" title="Runs /compact summary (note: Antigravity only resets context on New Chat or auto-CHECKPOINT)">/compact</button>
+                        <button id="cp-handoff" style="${S.btn}" title="Compact current transcript into a lean handoff, copy to clipboard, and seed New Chat">Handoff</button>
+                        <button id="cp-subchat-tgl" style="${S.ghost}" title="Start an isolated side/sub-chat for a bug or fix without bloating main context">Sub-Chat</button>
                         <button id="cp-refresh" style="${S.ghost}">Refresh</button>
                     </div>
                 </div>
+                ${statusMsg ? `<div style="font-size:10px;color:#34d399;background:rgba(16,185,129,.1);border:1px solid rgba(16,185,129,.3);border-radius:4px;padding:4px 6px;">${esc(statusMsg)}</div>` : ''}
+                ${showSubChat ? `<div style="display:flex;gap:4px;">
+                    <input id="cp-subchat-topic" placeholder="Side-task or fix to isolate (optional)..." value="${esc(subChatTopic)}" style="flex:1;min-width:0;background:#0c0c0e;border:1px solid rgba(59,130,246,.35);border-radius:4px;color:#e4e4e7;font-size:11px;padding:3px 6px;outline:none;">
+                    <button id="cp-subchat-go" style="${S.btn}">Go</button>
+                </div>` : ''}
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:10px;color:#a1a1aa;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:5px;padding:3px 6px;">
                     <span id="cp-pick-ws" title="${esc(state.workspace)} - click to switch" style="font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;">${esc(wsTitle)}</span>
                     <div style="display:flex;gap:4px;align-items:center;flex:none;">
                         ${graphChip}
+                        ${state.workspacePinned ? `<button id="cp-unpin-ws" style="${S.ghost}" title="Return to auto workspace detection">Auto</button>` : ''}
                         ${m.mapFile ? `<button id="cp-open-map" style="${S.ghost}" title="Open ${esc(m.mapFile)}">Map</button>` : ''}
                     </div>
                 </div>
@@ -260,6 +430,8 @@ function installCtxPilotOverviewHub() {
                 ${S.div}
                 ${section('prompts', 'QUICK PROMPTS', '', promptsBody())}
                 ${S.div}
+                ${section('fixes', 'FIXES', `<span style="${S.muted}">${(state.fixes || []).length}</span>`, fixesBody())}
+                ${S.div}
                 ${section('rules', 'RULES', `<span style="${S.muted}">${state.rules.filter(r => r.enabled).length}/${state.rules.length}</span><button id="cp-open-rules" style="${S.ghost}">Open</button>`, rulesBody())}
                 ${S.div}
                 ${section('hooks', 'HOOKS', `<span style="${S.muted}">${state.hooks.filter(h => h.enabled).length}/${state.hooks.length}</span><button id="cp-open-hooks" style="${S.ghost}">Open</button>`, hooksBody())}
@@ -275,11 +447,50 @@ function installCtxPilotOverviewHub() {
             applyFilter();
 
             const on = (sel, fn) => hub.querySelectorAll(sel).forEach(el => { el.onclick = (e) => fn(el, e); });
-            on('#cp-compact', (b) => { b.textContent = 'Sent'; sendPrompt('/compact'); setTimeout(() => { b.textContent = '/compact'; }, 1200); });
+            on('#cp-handoff', async () => {
+                const res = await invoke('ctxpilot:handoff', {});
+                if (res && res.markdown) {
+                    const srcK = res.sourceTokens ? `${k(res.sourceTokens)} -> ` : '';
+                    openNewChatWithPrompt(res.markdown, `Handoff (${srcK}~${res.handoffTokensEst} tok)`);
+                }
+            });
+            on('#cp-subchat-tgl', () => { showSubChat = !showSubChat; render(true); });
+            const launchSubChat = async () => {
+                const res = await invoke('ctxpilot:subchat', { topic: subChatTopic });
+                showSubChat = false;
+                subChatTopic = '';
+                if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`);
+            };
+            on('#cp-subchat-go', launchSubChat);
+            const subIn = hub.querySelector('#cp-subchat-topic');
+            if (subIn) {
+                subIn.oninput = () => { subChatTopic = subIn.value; };
+                subIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') launchSubChat(); };
+            }
+            const saveFixNote = async () => {
+                if (!fixInput.trim()) return;
+                const convId = state.context && state.context.transcript && state.context.transcript.convId;
+                state = await invoke('ctxpilot:add-fix', { title: fixInput.trim(), convId }) || state;
+                fixInput = '';
+                render(true);
+            };
+            on('#cp-fix-save', saveFixNote);
+            const fixIn = hub.querySelector('#cp-fix-input');
+            if (fixIn) {
+                fixIn.oninput = () => { fixInput = fixIn.value; };
+                fixIn.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') saveFixNote(); };
+            }
+            on('.cp-fix-use', (el) => {
+                const text = el.dataset.detail ? `${el.dataset.title}: ${el.dataset.detail}` : el.dataset.title;
+                insertTextIntoChat(`Saved fix context: ${text}\n`, false);
+            });
+            on('.cp-fix-rm', async (el) => { state = await invoke('ctxpilot:rm-fix', el.dataset.id) || state; render(true); });
             on('#cp-refresh', () => sync(true));
             on('#cp-park-heavy', async () => { if (state.bloatAlert) { state = await invoke('ctxpilot:park-heavy', state.bloatAlert.topServers) || state; render(true); } });
             on('#cp-apply-hint', async () => { if (state.profileHint) { state = await invoke('ctxpilot:apply-profile', state.profileHint.profile) || state; render(true); } });
             on('#cp-pick-ws', async () => { state = await invoke('ctxpilot:pick-workspace') || state; sync(true); });
+            on('#cp-unpin-ws', async () => { state = await invoke('ctxpilot:unpin-workspace') || state; sync(true); });
+            on('#cp-restart-app', async (b) => { b.textContent = 'Restarting...'; await invoke('ctxpilot:restart-app'); });
             on('#cp-open-mcp', () => invoke('ctxpilot:open-path', 'mcpConfig'));
             on('#cp-open-rules', () => invoke('ctxpilot:open-path', 'rulesDir'));
             on('#cp-open-hooks', () => invoke('ctxpilot:open-path', 'hooksFile'));
@@ -319,18 +530,8 @@ function installCtxPilotOverviewHub() {
                 await invoke('ctxpilot:run-cli', cmd);
                 setTimeout(() => { el.textContent = label; }, 1200);
             });
-            on('.cp-prompt', (el) => {
-                const input = document.querySelector('textarea, [contenteditable="true"]');
-                if (!input) return;
-                input.focus();
-                document.execCommand('insertText', false, el.dataset.text || '');
-            });
-            on('.cp-skill', (el) => {
-                const input = document.querySelector('textarea, [contenteditable="true"]');
-                if (!input) return;
-                input.focus();
-                document.execCommand('insertText', false, `Use the ${el.textContent.trim()} skill. `);
-            });
+            on('.cp-prompt', (el) => { insertTextIntoChat(el.dataset.text || '', false); });
+            on('.cp-skill', (el) => { insertTextIntoChat(`Use the ${el.textContent.trim()} skill. `, false); });
             const filter = hub.querySelector('#cp-skill-filter');
             if (filter) {
                 filter.oninput = () => { skillFilter = filter.value; applyFilter(); };
@@ -359,6 +560,7 @@ function installCtxPilotOverviewHub() {
     const start = () => {
         if (!document.body) { setTimeout(start, 200); return; }
         document.addEventListener('click', () => setTimeout(render, 120), { passive: true });
+        window.addEventListener('resize', renderActionBar, { passive: true });
         setInterval(sync, 5000);
         setInterval(render, 1000);
         sync(true);

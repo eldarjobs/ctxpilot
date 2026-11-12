@@ -8,6 +8,7 @@ const { patchStatus, patchInstall, patchEnsure, patchRestore } = require('../src
 const { initWorkspace, initHubConfig } = require('../src/stack');
 const { runBench, formatBench } = require('../src/bench');
 const { exportBundle, importBundle } = require('../src/bundle');
+const { buildHandoff, buildSubChat, listFixes, addFix, removeFix } = require('../src/handoff');
 const pkg = require('../package.json');
 
 function parseArgs(argv) {
@@ -24,6 +25,7 @@ function parseArgs(argv) {
         else if (a === '--run-hooks') flags.runHooks = true;
         else if (a === '--force') flags.force = true;
         else if (a === '--overwrite') flags.overwrite = true;
+        else if (a === '--all') flags.all = true;
         else if (a === '--version' || a === '-v') flags.version = true;
         else if (a === '--help' || a === '-h') flags.help = true;
         else if ((a === '--workspace' || a === '-w') && argv[i + 1]) flags.workspaceDir = argv[++i];
@@ -50,6 +52,9 @@ Usage:
   ctx hub      init [--dry-run] [--force] [--workspace <dir>]
   ctx init     [nextjs|dotnet|node|python|auto] [--dry-run] [--force] [--workspace <dir>]
   ctx bench    [--run-hooks] [--json] [--workspace <dir>]
+  ctx handoff  [--conv <id>] [--workspace <dir>] [--json]
+  ctx subchat  [topic...] [--conv <id>] [--workspace <dir>] [--json]
+  ctx fix      add "<note>" | list [--all] | rm <id> [--dry-run] [--json]
   ctx bundle   export [--out <file>] [--strict] [--dry-run] | import <file> [--overwrite] [--dry-run]
 
 Flags:
@@ -202,6 +207,43 @@ async function main() {
             return;
         }
         throw new Error('Usage: ctx bundle export [--out <file>] | import <file>');
+    }
+
+    if (cmd === 'handoff' || cmd === 'compact') {
+        const res = buildHandoff(flags);
+        console.log(flags.json ? JSON.stringify(res, null, 2) : res.markdown);
+        return;
+    }
+
+    if (cmd === 'subchat') {
+        const topic = flags._.slice(1).join(' ');
+        const res = buildSubChat({ ...flags, topic });
+        console.log(flags.json ? JSON.stringify(res, null, 2) : res.markdown);
+        return;
+    }
+
+    if (cmd === 'fix') {
+        const sub = arg || 'list';
+        if (sub === 'list') {
+            const items = listFixes(flags);
+            if (flags.json) console.log(JSON.stringify(items, null, 2));
+            else if (!items.length) console.log('No saved fixes.');
+            else for (const f of items) console.log(`  [${f.id}] ${f.title}${f.detail ? ` — ${f.detail}` : ''}`);
+            return;
+        }
+        if (sub === 'add') {
+            const note = flags._.slice(2).join(' ');
+            const res = addFix(note, '', flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Saved fix [${res.entry.id}]: ${res.entry.title}`);
+            return;
+        }
+        if (sub === 'rm') {
+            if (!flags._[2]) throw new Error('Usage: ctx fix rm <id>');
+            const res = removeFix(flags._[2], flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Removed ${res.removed} fix(es).`);
+            return;
+        }
+        throw new Error('Usage: ctx fix add "<note>" | list [--all] | rm <id>');
     }
 
     console.error(`Unknown command: ${cmd}\nRun "ctx --help" for usage.`);

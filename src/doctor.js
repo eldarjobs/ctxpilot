@@ -113,7 +113,7 @@ async function runDoctor(opts = {}) {
         } else if (srv.transport === 'http') {
             const rawUrl = srv.def.serverUrl || srv.def.url;
             let parsedUrl = null;
-            try { parsedUrl = new URL(rawUrl); } catch {}
+            try { parsedUrl = new URL(rawUrl); } catch { }
             if (!parsedUrl) {
                 add('mcp-server', srv.id, 'FAIL', 'Invalid HTTP server URL');
             } else if (parsedUrl.protocol === 'http:' && !['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname)) {
@@ -193,7 +193,7 @@ async function runDoctor(opts = {}) {
     }
 
     // 5. Antigravity Overview Hub patch resilience check
-    if (opts.resources || !opts.homeDir) {
+    if (!opts.skipPatchCheck && (opts.resources || !opts.homeDir)) {
         try {
             const ps = patchStatus({ resources: opts.resources });
             if (ps.found) {
@@ -205,7 +205,7 @@ async function runDoctor(opts = {}) {
                     add('patch', 'Antigravity app.asar', 'WARN', `Antigravity update wiped Overview Hub patch (v${ps.version}); run "ctx patch ensure"`);
                 }
             }
-        } catch {}
+        } catch { }
     }
 
     const summary = {

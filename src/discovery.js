@@ -30,6 +30,18 @@ function decodeFolderUri(uri) {
     }
 }
 
+function extractProjectFolders(parsedData) {
+    const res = parsedData?.projectResources?.resources;
+    if (!Array.isArray(res)) return [];
+    const out = [];
+    for (const r of res) {
+        const uri = r && (r.folderUri || r.gitFolder?.folderUri || r.localFolder?.folderUri);
+        const p = decodeFolderUri(uri);
+        if (p && fs.existsSync(p)) out.push(p);
+    }
+    return out;
+}
+
 function resolveWorkspace(opts = {}) {
     if (opts.workspaceDir) return path.resolve(opts.workspaceDir);
     const homeDir = opts.homeDir || os.homedir();
@@ -41,7 +53,8 @@ function resolveWorkspace(opts = {}) {
         return pinned.data.workspace;
     }
 
-    const isGenericCwd = /\\(AppData|System32|Windows|Programs\\Antigravity)/i.test(cwd);
+    const isHome = path.resolve(cwd).toLowerCase() === path.resolve(homeDir).toLowerCase();
+    const isGenericCwd = isHome || /\\(AppData|System32|Windows|Programs\\Antigravity)/i.test(cwd);
     if (!isGenericCwd && (fs.existsSync(path.join(cwd, '.git')) || fs.existsSync(path.join(cwd, '.agents')) || fs.existsSync(path.join(cwd, 'package.json')))) {
         return cwd;
     }
@@ -53,15 +66,18 @@ function resolveWorkspace(opts = {}) {
                 .filter(f => f.endsWith('.json') && f !== 'outside-of-project.json')
                 .map(f => ({ full: path.join(projDir, f), mtime: fs.statSync(path.join(projDir, f)).mtimeMs }))
                 .sort((a, b) => b.mtime - a.mtime);
+            const candidates = [];
             for (const f of files) {
                 const parsed = tryParseJson(f.full);
-                const res = parsed.data?.projectResources?.resources;
-                if (!Array.isArray(res)) continue;
-                for (const r of res) {
-                    const p = decodeFolderUri(r.folderUri);
-                    if (p && fs.existsSync(p)) return p;
-                }
+                const folders = extractProjectFolders(parsed.data);
+                if (folders.length) candidates.push({ name: parsed.data?.name || path.basename(folders[0]), path: folders[0] });
             }
+            const title = typeof opts.titleHint === 'string' ? opts.titleHint.toLowerCase() : '';
+            if (title) {
+                const byTitle = candidates.find(c => title.includes(c.name.toLowerCase()) || title.includes(path.basename(c.path).toLowerCase()));
+                if (byTitle) return byTitle.path;
+            }
+            if (candidates.length) return candidates[0].path;
         } catch {}
     }
 
@@ -72,7 +88,7 @@ function getPaths(opts = {}) {
     const homeDir = opts.homeDir || os.homedir();
     const geminiDir = path.join(homeDir, '.gemini');
     const cfgDir = path.join(geminiDir, 'config');
-    const workspaceDir = resolveWorkspace({ homeDir, workspaceDir: opts.workspaceDir, cwd: opts.cwd });
+    const workspaceDir = resolveWorkspace({ homeDir, workspaceDir: opts.workspaceDir, cwd: opts.cwd, titleHint: opts.titleHint });
     return {
         homeDir,
         geminiDir,

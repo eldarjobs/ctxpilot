@@ -77,6 +77,23 @@ function scheduleWindowsSwapAndRelaunch(srcFile, dstFile, resDir) {
     spawn('cmd.exe', ['/c', bat], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
 }
 
+function syncCoreCache(coreCacheDir) {
+    const srcRoot = path.join(__dirname, '..');
+    fs.mkdirSync(coreCacheDir, { recursive: true });
+    for (const ent of fs.readdirSync(srcRoot, { withFileTypes: true })) {
+        if (ent.isFile() && ent.name.endsWith('.js')) {
+            fs.copyFileSync(path.join(srcRoot, ent.name), path.join(coreCacheDir, ent.name));
+        }
+    }
+    const patcherDst = path.join(coreCacheDir, 'patcher');
+    fs.mkdirSync(patcherDst, { recursive: true });
+    for (const ent of fs.readdirSync(__dirname, { withFileTypes: true })) {
+        if (ent.isFile() && ent.name.endsWith('.js')) {
+            fs.copyFileSync(path.join(__dirname, ent.name), path.join(patcherDst, ent.name));
+        }
+    }
+}
+
 function patchInstall(opts = {}) {
     const resDir = findResourcesDir(opts.resources);
     if (!resDir) throw new Error('Antigravity resources directory not found. Pass --resources <dir>.');
@@ -111,11 +128,8 @@ function patchInstall(opts = {}) {
         return { action: 'patch-install', dryRun: true, version: pkg.version, buildHash, resDir };
     }
 
-    const coreCacheDir = path.join(os.homedir(), '.gemini', 'config', 'ctxpilot_core');
-    fs.mkdirSync(coreCacheDir, { recursive: true });
-    for (const f of ['context.js', 'discovery.js', 'doctor.js', 'mcp-control.js', 'redact.js', 'stack.js', 'transcript-adapter.js']) {
-        fs.copyFileSync(path.join(__dirname, '..', f), path.join(coreCacheDir, f));
-    }
+    const coreCacheDir = opts.coreCacheDir || path.join(os.homedir(), '.gemini', 'config', 'ctxpilot_core');
+    syncCoreCache(coreCacheDir);
     const corePathJson = JSON.stringify(coreCacheDir);
     const injectedMain = mainInject.replace('__CTXPILOT_ROOT__', corePathJson);
     ipc = ipc.replace(anchor, (m) => m + injectedMain + '\n');
@@ -176,4 +190,4 @@ function patchEnsure(opts = {}) {
     return { ...patchInstall(opts), action: 'patch-ensure', previouslyPatched: st.patched };
 }
 
-module.exports = { patchStatus, patchInstall, patchEnsure, patchRestore, verifyArchive };
+module.exports = { patchStatus, patchInstall, patchEnsure, patchRestore, verifyArchive, syncCoreCache };

@@ -1,4 +1,5 @@
     // ---- CTXPILOT_OVERVIEW_HUB (main process) ---------------------------------
+    try {
     const cpCoreDir = __CTXPILOT_ROOT__;
     const cpOs = require('os');
     const cpSpawn = require('child_process').spawn;
@@ -8,6 +9,7 @@
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
     const { parkServer: cpPark, unparkServer: cpUnpark, setReadonly: cpSetRo, applyProfile: cpApplyProfile, listProfiles: cpListProfiles } = require(path.join(cpCoreDir, 'mcp-control.js'));
     const { recommendProfile: cpRecommendProfile } = require(path.join(cpCoreDir, 'stack.js'));
+    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
 
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
@@ -144,14 +146,24 @@
         });
     }
 
+    function cpActiveOpts(extra = {}) {
+        let titleHint = '';
+        try {
+            const win = (typeof utils_1 !== 'undefined' && (utils_1.getFocusedHubWindow?.() || utils_1.getHubWindows?.()?.[0])) || electron_1.BrowserWindow.getFocusedWindow();
+            if (win && !win.isDestroyed()) titleHint = win.getTitle() || '';
+        } catch {}
+        return { titleHint, ...extra };
+    }
+
     async function cpState() {
-        const paths = cpGetPaths({});
+        const opts = cpActiveOpts();
+        const paths = cpGetPaths(opts);
         const mcp = cpDiscoverMcp(paths);
-        const ctx = cpAnalyzeContext({});
-        const doc = await cpRunDoctor({});
+        const ctx = cpAnalyzeContext(opts);
+        const doc = await cpRunDoctor({ ...opts, skipPatchCheck: true });
         const { actions, customPrompts } = cpDiscoverActions(paths.workspaceDir);
         const skills = cpDiscoverSkills(paths);
-        const profiles = cpListProfiles({});
+        const profiles = cpListProfiles(opts);
         const hubCfg = cpReadJson(path.join(paths.workspaceDir, '.agents', 'hub.json'));
         const servers = mcp.servers.map(s => {
             const env = (s.def && s.def.env) || {};
@@ -178,6 +190,7 @@
             : null;
         return {
             workspace: paths.workspaceDir,
+            workspacePinned: fsSync.existsSync(path.join(paths.cfgDir, 'hub_workspace.json')),
             configPath: mcp.configFiles[0]?.path || paths.mcpConfigs[0],
             restartPending: cpRestartPending,
             meta: cpMeta(paths.workspaceDir),
@@ -192,33 +205,37 @@
             skills,
             actions,
             customPrompts,
+            fixes: cpListFixes(opts).slice(0, 15),
+            chatSignals: cpGetChatSignals(opts),
         };
     }
 
     electron_1.ipcMain.handle('ctxpilot:state', async () => cpState());
-    electron_1.ipcMain.handle('ctxpilot:token-history', async () => cpTokenHistory(cpGetPaths({}).brainDir, 12));
+    electron_1.ipcMain.handle('ctxpilot:token-history', async () => cpTokenHistory(cpGetPaths(cpActiveOpts()).brainDir, 12));
 
     electron_1.ipcMain.handle('ctxpilot:toggle-mcp', async (_e, p) => {
-        if (p && p.parked) cpUnpark(p.id);
-        else if (p && p.id) cpPark(p.id);
+        const opts = cpActiveOpts();
+        if (p && p.parked) cpUnpark(p.id, opts);
+        else if (p && p.id) cpPark(p.id, opts);
         cpRestartPending = true;
         return cpState();
     });
 
     electron_1.ipcMain.handle('ctxpilot:toggle-ro', async (_e, p) => {
-        if (p && p.id) { cpSetRo(p.id, Boolean(p.enabled)); cpRestartPending = true; }
+        if (p && p.id) { cpSetRo(p.id, Boolean(p.enabled), cpActiveOpts()); cpRestartPending = true; }
         return cpState();
     });
 
     electron_1.ipcMain.handle('ctxpilot:apply-profile', async (_e, profile) => {
-        const res = cpApplyProfile(profile);
+        const res = cpApplyProfile(profile, cpActiveOpts());
         if (res.changes.length > 0) cpRestartPending = true;
         return cpState();
     });
 
     electron_1.ipcMain.handle('ctxpilot:park-heavy', async (_e, ids) => {
+        const opts = cpActiveOpts();
         if (Array.isArray(ids)) {
-            for (const id of ids) { try { cpPark(id); cpRestartPending = true; } catch {} }
+            for (const id of ids) { try { cpPark(id, opts); cpRestartPending = true; } catch {} }
         }
         return cpState();
     });
@@ -245,7 +262,7 @@
     });
 
     electron_1.ipcMain.handle('ctxpilot:pick-workspace', async () => {
-        const paths = cpGetPaths({});
+        const paths = cpGetPaths(cpActiveOpts());
         const res = await electron_1.dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Select Workspace for CtxPilot', defaultPath: paths.workspaceDir });
         if (!res.canceled && res.filePaths && res.filePaths[0]) {
             fsSync.mkdirSync(paths.cfgDir, { recursive: true });
@@ -255,8 +272,15 @@
         return cpState();
     });
 
+    electron_1.ipcMain.handle('ctxpilot:unpin-workspace', async () => {
+        const paths = cpGetPaths({});
+        try { fsSync.unlinkSync(path.join(paths.cfgDir, 'hub_workspace.json')); } catch {}
+        cpMetaCache.ts = 0;
+        return cpState();
+    });
+
     electron_1.ipcMain.handle('ctxpilot:run-cli', async (_e, cmdStr) => {
-        const root = cpGetPaths({}).workspaceDir;
+        const root = cpGetPaths(cpActiveOpts()).workspaceDir;
         const { actions } = cpDiscoverActions(root);
         const allowed = actions.find(a => a.cmd === cmdStr);
         if (!allowed || !fsSync.existsSync(root)) return false;
@@ -285,4 +309,52 @@
         if (p) await electron_1.shell.openPath(p);
         return Boolean(p);
     });
+
+    electron_1.ipcMain.handle('ctxpilot:handoff', async (_e, p) => {
+        const res = cpBuildHandoff(cpActiveOpts({ conv: p && p.conv }));
+        try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        return res;
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:subchat', async (_e, p) => {
+        const res = cpBuildSubChat(cpActiveOpts({ topic: p && p.topic, conv: p && p.conv }));
+        try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        return res;
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:add-fix', async (_e, p) => {
+        if (p && p.title) cpAddFix(p.title, p.detail || '', cpActiveOpts({ convId: p.convId }));
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:rm-fix', async (_e, id) => {
+        if (id) cpRemoveFix(id, cpActiveOpts());
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:restart-app', async () => {
+        try { if (typeof utils_1 !== 'undefined' && utils_1.setShowQuitConfirmation) utils_1.setShowQuitConfirmation(false); } catch {}
+        electron_1.app.relaunch();
+        setTimeout(() => electron_1.app.quit(), 80);
+        return true;
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:inject-snippet', async (_e, kind) => {
+        const opts = cpActiveOpts();
+        const paths = cpGetPaths(opts);
+        if (kind === 'diff') return cpGetQuickDiff(paths.workspaceDir);
+        if (kind === 'map') {
+            const mapFile = ['AGENTS.md', 'GEMINI.md', 'CLAUDE.md'].find(f => fsSync.existsSync(path.join(paths.workspaceDir, f)));
+            if (!mapFile) return '';
+            try { return `# ${mapFile}\n` + fsSync.readFileSync(path.join(paths.workspaceDir, mapFile), 'utf8').slice(0, 2200); } catch { return ''; }
+        }
+        if (kind === 'fixes') {
+            const fixes = cpListFixes(opts).slice(0, 8);
+            return fixes.length ? 'Saved workspace fixes:\n' + fixes.map(f => `- ${f.title}${f.detail ? `: ${f.detail}` : ''}`).join('\n') : '';
+        }
+        return '';
+    });
+    } catch (cpErr) {
+        try { console.error('[ctxpilot] Overview Hub init failed:', cpErr); } catch {}
+    }
     // ---- /CTXPILOT_OVERVIEW_HUB -----------------------------------------------

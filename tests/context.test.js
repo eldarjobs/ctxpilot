@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { analyzeContext, formatContext } = require('../src/context');
+const { getPaths } = require('../src/discovery');
 const { parseTranscriptV1 } = require('../src/transcript-adapter');
 
 let tmp;
@@ -64,5 +65,25 @@ describe('context analyzer & transcript adapter', () => {
         const corrupt = parseTranscriptV1('not-json\n{"foo":1}\n', 'conv-x');
         assert.equal(corrupt.available, false);
         assert.equal(corrupt.adapterVersion, 'v1');
+    });
+
+    it('auto-detects workspace from Antigravity gitFolder project files and titleHint', () => {
+        const { pathToFileURL } = require('node:url');
+        const repoA = path.join(tmp, 'alpha-repo');
+        const repoB = path.join(tmp, 'beta-repo');
+        fs.mkdirSync(repoA, { recursive: true });
+        fs.mkdirSync(repoB, { recursive: true });
+        fs.mkdirSync(path.join(home, '.gemini', 'config', 'projects'), { recursive: true });
+        fs.writeFileSync(path.join(home, '.gemini', 'config', 'projects', 'a.json'), JSON.stringify({
+            name: 'alpha-repo',
+            projectResources: { resources: [{ gitFolder: { folderUri: pathToFileURL(repoA).href } }] },
+        }));
+        fs.writeFileSync(path.join(home, '.gemini', 'config', 'projects', 'b.json'), JSON.stringify({
+            name: 'beta-repo',
+            projectResources: { resources: [{ folderUri: pathToFileURL(repoB).href }] },
+        }));
+
+        const resolvedByTitle = getPaths({ homeDir: home, cwd: home, titleHint: 'alpha-repo - Antigravity' });
+        assert.equal(resolvedByTitle.workspaceDir, path.resolve(repoA));
     });
 });

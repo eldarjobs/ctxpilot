@@ -55,10 +55,17 @@ describe('Overview Hub ASAR patcher', () => {
             assert.equal(dry.dryRun, true);
             assert.equal(patchStatus({ resources: tmp }).patched, false);
 
-            const res = patchInstall({ resources: tmp });
+            const coreCacheDir = path.join(tmp, 'ctxpilot_core');
+            const res = patchInstall({ resources: tmp, coreCacheDir });
             assert.equal(res.installed, true);
             assert.equal(res.version, '2.99.0');
             assert.equal(res.checked, 2); // package.json + assets/keep.txt
+
+            // Verify all modules required by main-inject.js resolve cleanly from isolated coreCacheDir
+            for (const mod of ['context.js', 'doctor.js', 'discovery.js', 'mcp-control.js', 'stack.js', 'handoff.js']) {
+                const loaded = require(path.join(coreCacheDir, mod));
+                assert.ok(loaded, `${mod} should load from coreCacheDir`);
+            }
 
             const st = patchStatus({ resources: tmp });
             assert.equal(st.patched, true);
@@ -76,10 +83,24 @@ describe('Overview Hub ASAR patcher', () => {
             const doc = await runDoctor({ homeDir: tmp, workspaceDir: tmp, resources: tmp });
             assert.equal(doc.findings.some(f => f.category === 'patch' && f.level === 'WARN'), true);
 
-            const ens1 = patchEnsure({ resources: tmp });
+            const ens1 = patchEnsure({ resources: tmp, coreCacheDir });
             assert.equal(ens1.installed, true);
-            const ens2 = patchEnsure({ resources: tmp });
+            const ens2 = patchEnsure({ resources: tmp, coreCacheDir });
             assert.equal(ens2.alreadyUpToDate, true);
+
+            // Verify registerIpcHandlers does not throw even if coreCacheDir is removed
+            fs.rmSync(coreCacheDir, { recursive: true, force: true });
+            const brokenIpc = readEntry(readArchive(asarPath), 'dist/ipcHandlers.js').toString('utf8');
+            const mod = { exports: {} };
+            const fn = new Function('require', 'exports', 'module', '__dirname', '__filename', brokenIpc);
+            const origErr = console.error;
+            console.error = () => {};
+            try {
+                fn(() => ({}), mod.exports, mod, tmp, path.join(tmp, 'ipcHandlers.js'));
+                assert.doesNotThrow(() => mod.exports.registerIpcHandlers({}));
+            } finally {
+                console.error = origErr;
+            }
         } finally {
             fs.rmSync(tmp, { recursive: true, force: true });
         }
