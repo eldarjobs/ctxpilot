@@ -90,4 +90,17 @@ describe('Handoff, Sub-Chat & Saved Fixes', () => {
         assert.equal(res.parentConvId, 'abc12345');
         assert.match(res.summary, /\[Sub-Chat sub99999 result\]/);
     });
+
+    it('detects forked sub-chat headers as sub-chats with parentConvId', () => {
+        const forkedConv = path.join(home, '.gemini', 'antigravity', 'brain', 'fork88888-conv', '.system_generated', 'logs');
+        fs.mkdirSync(forkedConv, { recursive: true });
+        fs.writeFileSync(path.join(forkedConv, 'transcript.jsonl'), [
+            JSON.stringify({ type: 'USER_INPUT', content: '# Forked Sub-Chat (from abc12345 · Turn 1)\nContinue from turn 1.' }),
+            JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'Forked task running cleanly.' }),
+        ].join('\n') + '\n');
+
+        const forkSig = getChatSignals({ homeDir: home, workspaceDir: ws, conv: 'fork88888-conv' });
+        assert.equal(forkSig.isSubChat, true);
+        assert.equal(forkSig.parentConvId, 'abc12345');
+    });
 });
