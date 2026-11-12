@@ -120,7 +120,18 @@ function fixSecrets(opts = {}) {
     const changes = [];
     const backups = [];
 
-    for (const cfgPath of paths.mcpConfigs) {
+    const seen = new Set();
+    const allMcpPaths = [
+        ...paths.mcpConfigs,
+        ...(paths.externalMcpConfigs || []).map(e => e.path),
+    ].filter(p => {
+        const key = path.resolve(p).toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+
+    for (const cfgPath of allMcpPaths) {
         const parsed = tryParseJson(cfgPath);
         if (!parsed.exists || !parsed.data || !parsed.data.mcpServers) continue;
         let dirty = false;

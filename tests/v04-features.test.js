@@ -30,8 +30,14 @@ afterEach(() => {
 describe('v0.4.0 Secret Auto-Fix', () => {
     it('moves plaintext secrets to .env + envWriter, backs up config, and never leaks secrets', async () => {
         const cfgPath = path.join(home, '.gemini', 'config', 'mcp_config.json');
+        const claudePath = path.join(home, '.claude.json');
         const secret = 'sk-proj-superSecretTokenValue99999';
         fs.writeFileSync(cfgPath, JSON.stringify({
+            mcpServers: {
+                context7: { url: 'https://mcp.context7.com/mcp', headers: { Authorization: `Bearer ${secret}` } },
+            },
+        }));
+        fs.writeFileSync(claudePath, JSON.stringify({
             mcpServers: {
                 context7: { url: 'https://mcp.context7.com/mcp', headers: { Authorization: `Bearer ${secret}` } },
             },
@@ -39,7 +45,7 @@ describe('v0.4.0 Secret Auto-Fix', () => {
 
         const dry = fixSecrets({ homeDir: home, workspaceDir: ws, dryRun: true, skipOsEnv: true });
         assert.equal(dry.dryRun, true);
-        assert.equal(dry.fixedCount, 1);
+        assert.equal(dry.fixedCount, 2);
         assert.equal(JSON.stringify(dry).includes(secret), false);
         assert.equal(fs.readFileSync(cfgPath, 'utf8').includes(secret), true);
 
@@ -49,14 +55,17 @@ describe('v0.4.0 Secret Auto-Fix', () => {
             workspaceDir: ws,
             envWriter: (k, v) => writtenEnv.push([k, v]),
         });
-        assert.equal(res.fixedCount, 1);
+        assert.equal(res.fixedCount, 2);
         assert.equal(fs.existsSync(`${cfgPath}.bak`), true);
+        assert.equal(fs.existsSync(`${claudePath}.bak`), true);
         assert.equal(writtenEnv.length, 1);
         assert.equal(writtenEnv[0][0], 'CONTEXT7_API_KEY');
         assert.equal(writtenEnv[0][1], secret);
 
         const updated = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+        const updatedClaude = JSON.parse(fs.readFileSync(claudePath, 'utf8'));
         assert.equal(updated.mcpServers.context7.headers.Authorization, 'Bearer ${CONTEXT7_API_KEY}');
+        assert.equal(updatedClaude.mcpServers.context7.headers.Authorization, 'Bearer ${CONTEXT7_API_KEY}');
         assert.equal(fs.readFileSync(res.dotEnvPath, 'utf8').includes(`CONTEXT7_API_KEY=${secret}`), true);
 
         const doc = await runDoctor({ homeDir: home, workspaceDir: ws });
