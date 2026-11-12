@@ -9,7 +9,7 @@
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
     const { parkServer: cpPark, unparkServer: cpUnpark, setReadonly: cpSetRo, applyProfile: cpApplyProfile, listProfiles: cpListProfiles } = require(path.join(cpCoreDir, 'mcp-control.js'));
     const { recommendProfile: cpRecommendProfile } = require(path.join(cpCoreDir, 'stack.js'));
-    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, buildTurnTimeline: cpBuildTurnTimeline, buildSubChatFromTurn: cpBuildSubChatFromTurn, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, buildSubChatResult: cpBuildSubChatResult, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
+    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, buildTurnTimeline: cpBuildTurnTimeline, buildSubChatFromTurn: cpBuildSubChatFromTurn, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, buildSubChatResult: cpBuildSubChatResult, getQuickDiffContext: cpGetQuickDiff, listSubChats: cpListSubChats, recordSubChatTitle: cpRecordSubChatTitle } = require(path.join(cpCoreDir, 'handoff.js'));
     const { createCheckpoint: cpCreateCheckpoint, maybeAutoCheckpoint: cpMaybeAutoCheckpoint, listCheckpoints: cpListCheckpoints, rewindCheckpoint: cpRewindCheckpoint, dropCheckpoint: cpDropCheckpoint, createWorktreeSubChat: cpCreateWorktreeSubChat, listWorktrees: cpListWorktrees, removeWorktree: cpRemoveWorktree } = require(path.join(cpCoreDir, 'checkpoint.js'));
     const { detectVerifyCommand: cpDetectVerify, runVerify: cpRunVerify } = require(path.join(cpCoreDir, 'verify.js'));
     const { syncAgents: cpSyncAgents } = require(path.join(cpCoreDir, 'sync.js'));
@@ -18,7 +18,7 @@
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
     let cpSlowCache = { ts: 0, root: '', doc: null, skills: null, checkpoints: null, worktrees: null, verifyCmd: null };
-    let cpTxCache = { key: '', ws: '', ctx: null, sig: null, tl: null };
+    let cpTxCache = { key: '', ws: '', ctx: null, sig: null, tl: null, sub: null };
     const cpTokenCache = new Map();
     const cpAutoAppliedWorkspaces = new Set();
     const cpLastTurnAuto = new Map();
@@ -199,7 +199,8 @@
         const ctx = freshTx ? cpAnalyzeContext(opts) : cpTxCache.ctx;
         const sig = freshTx ? cpGetChatSignals(opts) : cpTxCache.sig;
         const tl = freshTx ? cpBuildTurnTimeline(opts) : cpTxCache.tl;
-        if (freshTx && txSig) cpTxCache = { key: txSig, ws: paths.workspaceDir, ctx, sig, tl };
+        const subMeta = freshTx ? cpListSubChats(opts) : cpTxCache.sub;
+        if (freshTx && txSig) cpTxCache = { key: txSig, ws: paths.workspaceDir, ctx, sig, tl, sub: subMeta };
 
         const doc = freshSlow ? await cpRunDoctor({ ...opts, skipPatchCheck: true }) : cpSlowCache.doc;
         const skills = freshSlow ? cpDiscoverSkills(paths) : cpSlowCache.skills;
@@ -270,6 +271,10 @@
             customPrompts,
             fixes: cpListFixes(opts).slice(0, 15),
             chatSignals: sig,
+            activeConvId: subMeta ? subMeta.activeConvId : '',
+            activeConvTitle: subMeta ? subMeta.activeConvTitle : '',
+            projectNames: subMeta ? subMeta.projectNames : [],
+            subChats: subMeta ? subMeta.subChats : [],
             timeline: tl.turns,
             checkpoints,
             worktrees,
@@ -463,6 +468,11 @@
         const res = cpBuildSubChatFromTurn(turn, cpActiveOpts());
         try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
         return res;
+    });
+    electron_1.ipcMain.handle('ctxpilot:record-subchat-title', async (_e, p) => {
+        cpRecordSubChatTitle(p, cpActiveOpts());
+        cpTxCache.key = '';
+        return true;
     });
     } catch (cpErr) {
         try { console.error('[ctxpilot] Overview Hub init failed:', cpErr); } catch {}

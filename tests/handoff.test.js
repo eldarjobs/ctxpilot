@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('os');
 const path = require('path');
-const { buildHandoff, buildSubChat, listFixes, addFix, removeFix, getChatSignals, buildSubChatResult } = require('../src/handoff');
+const { buildHandoff, buildSubChat, listFixes, addFix, removeFix, getChatSignals, buildSubChatResult, listSubChats, recordSubChatTitle } = require('../src/handoff');
 
 describe('Handoff, Sub-Chat & Saved Fixes', () => {
     let tmp, home, ws, convDir;
@@ -103,5 +103,40 @@ describe('Handoff, Sub-Chat & Saved Fixes', () => {
         const forkSig = getChatSignals({ homeDir: home, workspaceDir: ws, conv: 'fork88888-conv' });
         assert.equal(forkSig.isSubChat, true);
         assert.equal(forkSig.parentConvId, 'abc12345');
+    });
+
+    it('preserves sub-chat detection past 64KB transcripts and lists sub-chats + project names', () => {
+        const projDir = path.join(home, '.gemini', 'config', 'projects');
+        fs.mkdirSync(projDir, { recursive: true });
+        fs.writeFileSync(path.join(projDir, 'p1.json'), JSON.stringify({
+            name: 'Reportiing',
+            projectResources: { resources: [{ folderUri: 'file:///c%3A/repo/Reportiing' }] },
+        }));
+
+        const bigSub = path.join(home, '.gemini', 'antigravity', 'brain', 'big77777-conv', '.system_generated', 'logs');
+        fs.mkdirSync(bigSub, { recursive: true });
+        const filler = JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'x'.repeat(2048) });
+        const lines = [
+            JSON.stringify({ type: 'USER_INPUT', content: '# Sub-Chat: Fix sidebar\n> Isolated Sub-Chat (branched from abc12345)\n- Task / Fix: Fix sidebar' }),
+            ...Array.from({ length: 45 }, () => filler),
+            JSON.stringify({ type: 'USER_INPUT', content: 'Follow-up turn after 90KB' }),
+            JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'Fixed cleanly.' }),
+        ];
+        fs.writeFileSync(path.join(bigSub, 'transcript.jsonl'), lines.join('\n') + '\n');
+
+        const sig = getChatSignals({ homeDir: home, workspaceDir: ws, conv: 'big77777-conv' });
+        assert.equal(sig.isSubChat, true);
+        assert.equal(sig.parentConvId, 'abc12345');
+
+        recordSubChatTitle({ convId: 'big77777', title: 'Investigate Sidebar Bug', parentConvId: 'abc12345', parentTitle: 'Fix ctxpilot startup crash' }, { homeDir: home, workspaceDir: ws });
+        const meta = listSubChats({ homeDir: home, workspaceDir: ws, conv: 'big77777-conv' });
+        assert.equal(meta.activeConvId, 'big77777');
+        assert.equal(meta.activeConvTitle, 'Investigate Sidebar Bug');
+        assert.equal(meta.projectNames.includes('Reportiing'), true);
+        const entry = meta.subChats.find(s => s.convId === 'big77777');
+        assert.ok(entry);
+        assert.equal(entry.parentConvId, 'abc12345');
+        assert.equal(entry.title, 'Investigate Sidebar Bug');
+        assert.equal(entry.topic, 'Fix sidebar');
     });
 });

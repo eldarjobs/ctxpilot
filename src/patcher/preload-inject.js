@@ -74,10 +74,33 @@ function installCtxPilotOverviewHub() {
         return null;
     }
 
+    function getProjectNamesSet() {
+        const set = new Set(['outside of project']);
+        const ws = state && state.meta && state.meta.name;
+        if (ws) set.add(String(ws).trim().toLowerCase());
+        for (const p of (state && state.projectNames) || []) {
+            const n = String(p || '').trim().toLowerCase();
+            if (n) set.add(n);
+        }
+        return set;
+    }
+
     function loadSubLinks() {
         try {
             const raw = JSON.parse(localStorage.getItem('ctxPilotSubChatLinks') || '[]');
-            return Array.isArray(raw) ? raw.filter(l => l && l.parentTitle && !/^(\+\s*)?(new\s*(conversation|chat)|automations|customizations|pinned|projects)/i.test(l.parentTitle)) : [];
+            if (!Array.isArray(raw)) return [];
+            const projSet = getProjectNamesSet();
+            const now = Date.now();
+            const cleaned = raw.filter(l => {
+                if (!l || !l.parentTitle) return false;
+                if (/^(\+\s*)?(new\s*(conversation|chat)|automations|customizations|pinned|projects)/i.test(l.parentTitle)) return false;
+                if (projSet.has(String(l.parentTitle).trim().toLowerCase())) return false;
+                if (l.childTitle && (isPlaceholderTitle(l.childTitle) || projSet.has(String(l.childTitle).trim().toLowerCase()))) return false;
+                if (!l.childTitle && now - (l.createdAt || 0) >= 300000) return false;
+                return true;
+            });
+            if (cleaned.length !== raw.length) saveSubLinks(cleaned);
+            return cleaned;
         } catch { return []; }
     }
     function saveSubLinks(list) {
@@ -86,6 +109,8 @@ function installCtxPilotOverviewHub() {
 
     let cpSidebarRoot = null;
     const isPlaceholderTitle = (t) => !t || /^(new\s*(conversation|chat)|untitled)$/i.test(t);
+    const hasTimeSuffix = (t) => /\s+(now|\d+[smhdwy])$/i.test(String(t || '').trim());
+    const cleanSidebarTitle = (s) => String(s || '').replace(/^[↳\s]+/, '').replace(/\s+(now|\d+[smhdwy])$/i, '').trim().slice(0, 48);
 
     function findSidebarAnchor() {
         const newBtn = findNewChatButton();
@@ -139,7 +164,7 @@ function installCtxPilotOverviewHub() {
                 if (r.height > 0 && (r.top > 64 || r.bottom <= 0)) continue;
                 const t = (ch.textContent || '').replace(/\s+/g, ' ').trim();
                 const idx = t.indexOf(' / ');
-                if (idx > 0 && t.length < 140 && r.height > 0 && r.height <= 44 && ch.children.length <= 4) {
+                if (idx > 0 && t.length < 140 && r.height > 0 && r.height <= 44 && ch.children.length <= 8) {
                     return t.slice(idx + 3).trim();
                 }
                 const hit = walkTop(ch, depth + 1);
@@ -148,6 +173,41 @@ function installCtxPilotOverviewHub() {
             return '';
         };
         return walkTop(document.body, 0);
+    }
+
+    function findRowTitleLeaf(rowEl) {
+        let best = null;
+        let bestLen = 0;
+        for (const el of rowEl.querySelectorAll('span, div, p')) {
+            if (el.children.length > 0) continue;
+            const t = (el.textContent || '').trim();
+            if (t.length >= 3 && !/^(now|\d+[smhdwy])$/i.test(t) && t.length > bestLen) {
+                best = el;
+                bestLen = t.length;
+            }
+        }
+        return best || rowEl;
+    }
+
+    function isKnownConvTitle(cleanLower) {
+        if (!cleanLower) return false;
+        if (state && state.activeConvTitle && cleanLower === state.activeConvTitle.toLowerCase()) return true;
+        return ((state && state.subChats) || []).some(sc =>
+            (sc.title && sc.title.toLowerCase() === cleanLower) ||
+            (sc.parentTitle && sc.parentTitle.toLowerCase() === cleanLower)
+        );
+    }
+
+    function hasLeftFolderIcon(rowEl, leaf) {
+        const lr = leaf.getBoundingClientRect();
+        if (lr.width <= 0) return false;
+        for (const svg of rowEl.querySelectorAll('svg')) {
+            const sr = svg.getBoundingClientRect();
+            if (sr.width > 0 && sr.height > 0 && sr.left < lr.left - 1 && sr.right <= lr.left + 8) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function findSidebarConvRows() {
@@ -165,45 +225,79 @@ function installCtxPilotOverviewHub() {
         }
         const rows = [];
         const skipRe = /^(\+\s*new|new chat|new conversation|inbox|automations|customizations|pinned|projects|settings|extensions|review|files|terminal|workspaces|open|see all)/i;
-        const wsName = (state && state.meta && state.meta.name || '').toLowerCase();
+        const projSet = getProjectNamesSet();
         for (const el of root.querySelectorAll('div, button, a, li, [role="button"], [role="listitem"], [role="treeitem"]')) {
             if (hub && hub.contains(el)) continue;
             if (rows.some(p => p.el.contains(el))) continue;
             const r = el.getBoundingClientRect();
             if (r.top < minTop || r.width < 110 || r.height < 18 || r.height > 48) continue;
+            if (el.tagName === 'DIV' && !el.getAttribute('role')) {
+                const inner = el.querySelector('button, a, [role="button"], [role="listitem"], [role="treeitem"]');
+                if (inner) {
+                    const ir = inner.getBoundingClientRect();
+                    if (ir.height >= 18 && ir.height <= 48 && ir.width >= 110) continue;
+                }
+            }
             const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
-            if (!txt || txt.length > 90 || skipRe.test(txt) || txt.toLowerCase() === wsName) continue;
+            if (!txt || txt.length > 90 || skipRe.test(txt)) continue;
             if (/[\\\/]/.test(txt) && txt.includes(':')) continue;
-            rows.push({ el, rect: r, text: txt });
+            const clean = cleanSidebarTitle(txt);
+            const cleanLower = clean.toLowerCase();
+            if (!cleanLower) continue;
+            const timed = hasTimeSuffix(txt);
+            if (projSet.has(cleanLower) && !timed) continue;
+            const leaf = findRowTitleLeaf(el);
+            if (!timed && hasLeftFolderIcon(el, leaf) && !isKnownConvTitle(cleanLower)) continue;
+            rows.push({ el, rect: r, text: txt, title: clean, leaf });
         }
         return rows;
     }
 
-    function findActiveSidebarRow(rows) {
-        const isHighlighted = (row) => {
-            const cs = getComputedStyle(row.el);
+    function isRowHighlighted(row) {
+        const candidates = [row.el, ...row.el.querySelectorAll('div, button, a')].slice(0, 6);
+        for (const node of candidates) {
+            if (node.getAttribute('aria-current') || node.getAttribute('aria-selected') === 'true' || node.dataset?.active === 'true' || node.dataset?.selected === 'true') {
+                return true;
+            }
+            const cs = getComputedStyle(node);
             const hasBg = cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
             const hasBorder = cs.borderTopWidth && cs.borderTopWidth !== '0px' && cs.borderTopStyle !== 'none';
-            return hasBg || hasBorder;
-        };
-        const hdr = findActiveHeaderTitle();
-        if (hdr) {
-            const needle = hdr.slice(0, 18).toLowerCase();
-            const matches = rows.filter(r => r.text.toLowerCase().includes(needle));
-            if (matches.length) return matches.find(isHighlighted) || matches[0];
+            const hasShadow = cs.boxShadow && cs.boxShadow !== 'none';
+            if (hasBg || hasBorder || hasShadow) return true;
         }
-        return rows.find(isHighlighted) || rows[0] || null;
+        return false;
     }
 
-    const cleanSidebarTitle = (s) => String(s || '').replace(/\s+(now|\d+[smhd])$/i, '').trim().slice(0, 48);
+    function matchRowByTitle(rows, title) {
+        if (!title) return null;
+        const needle = cleanSidebarTitle(title).replace(/\.{3}$/, '').slice(0, 20).toLowerCase();
+        if (!needle) return null;
+        const matches = rows.filter(r => r.title.toLowerCase().includes(needle) || r.text.toLowerCase().includes(needle));
+        if (!matches.length) return null;
+        return matches.find(isRowHighlighted) || matches[0];
+    }
+
+    function findActiveSidebarRow(rows) {
+        if (state && state.activeConvTitle) {
+            const byState = matchRowByTitle(rows, state.activeConvTitle);
+            if (byState) return byState;
+        }
+        const hdr = findActiveHeaderTitle();
+        if (hdr) {
+            const byHdr = matchRowByTitle(rows, hdr);
+            if (byHdr) return byHdr;
+        }
+        return rows.find(isRowHighlighted) || null;
+    }
 
     let lastNormalChatTitle = '';
+    const recordedSubTitles = new Set();
 
     function recordSubChatLink(topic, res) {
         const rows = findSidebarConvRows();
         const active = findActiveSidebarRow(rows);
-        const parentTitle = (active ? cleanSidebarTitle(active.text) : cleanSidebarTitle(findActiveHeaderTitle())) || lastNormalChatTitle || 'Parent Chat';
-        const knownBefore = rows.map(r => cleanSidebarTitle(r.text).toLowerCase()).filter(Boolean).slice(0, 60);
+        const parentTitle = (active ? active.title : cleanSidebarTitle(findActiveHeaderTitle() || (state && state.activeConvTitle))) || lastNormalChatTitle || 'Parent Chat';
+        const knownBefore = rows.map(r => r.title.toLowerCase()).filter(Boolean);
         const list = loadSubLinks();
         list.unshift({
             id: Date.now().toString(36),
@@ -215,15 +309,6 @@ function installCtxPilotOverviewHub() {
             createdAt: Date.now(),
         });
         saveSubLinks(list);
-    }
-
-    function findRowTitleLeaf(rowEl) {
-        for (const el of rowEl.querySelectorAll('span, div, p')) {
-            if (el.children.length > 0) continue;
-            const t = (el.textContent || '').trim();
-            if (t.length >= 3 && !/^(now|\d+[smhd])$/i.test(t)) return el;
-        }
-        return rowEl;
     }
 
     function ensureSubChildCss() {
@@ -253,9 +338,9 @@ function installCtxPilotOverviewHub() {
 
     function findSharedListPair(parentEl, childEl) {
         let p = parentEl;
-        for (let i = 0; i < 3 && p && p.parentElement; i++, p = p.parentElement) {
+        for (let i = 0; i < 4 && p && p.parentElement; i++, p = p.parentElement) {
             let c = childEl;
-            for (let j = 0; j < 3 && c && c.parentElement; j++, c = c.parentElement) {
+            for (let j = 0; j < 4 && c && c.parentElement; j++, c = c.parentElement) {
                 if (p.parentElement === c.parentElement && p !== c) {
                     return { listEl: p.parentElement, parentItem: p, childItem: c };
                 }
@@ -272,33 +357,40 @@ function installCtxPilotOverviewHub() {
             const shared = findSharedListPair(parentEl, childEl);
             if (!shared) continue;
             const { listEl, parentItem, childItem } = shared;
-            if (listEl.children.length < 2 || listEl.children.length > 80) continue;
+            if (listEl.children.length < 2 || listEl.children.length > 120) continue;
             if (!byList.has(listEl)) byList.set(listEl, []);
             byList.get(listEl).push({ parentItem, childItem });
         }
         for (const [listEl, items] of byList.entries()) {
             const cs = getComputedStyle(listEl);
-            const isFlexCol = cs.display.includes('flex') && cs.flexDirection === 'column';
-            if (!isFlexCol) {
+            const supportsOrder = (cs.display.includes('flex') && cs.flexDirection === 'column') || cs.display.includes('grid');
+            if (!supportsOrder) {
                 const hasText = [...listEl.childNodes].some(n => n.nodeType === 3 && n.nodeValue && n.nodeValue.trim());
                 if (cs.display !== 'block' || hasText) continue;
                 listEl.setAttribute('data-cp-flexcol', '1');
                 usedFlex.add(listEl);
             }
             const children = [...listEl.children];
-            const baseOrder = new Map();
-            children.forEach((ch, idx) => baseOrder.set(ch, idx * 20));
+            const orderMap = new Map();
+            children.forEach((ch, idx) => orderMap.set(ch, idx * 1000));
             const childCounts = new Map();
-            const override = new Map();
-            for (const { parentItem, childItem } of items) {
-                const pBase = baseOrder.get(parentItem);
-                if (pBase == null || override.has(childItem)) continue;
-                const n = (childCounts.get(parentItem) || 0) + 1;
-                childCounts.set(parentItem, n);
-                override.set(childItem, pBase + n);
+            const moved = new Set();
+            // Resolve up to 3 passes so nested sub-chats (grandchild under child) group cleanly
+            for (let pass = 0; pass < 3; pass++) {
+                let any = false;
+                for (const { parentItem, childItem } of items) {
+                    if (moved.has(childItem) || !orderMap.has(parentItem) || !orderMap.has(childItem)) continue;
+                    const pOrd = orderMap.get(parentItem);
+                    const n = (childCounts.get(parentItem) || 0) + 1;
+                    childCounts.set(parentItem, n);
+                    orderMap.set(childItem, pOrd + n * Math.pow(10, 2 - pass));
+                    moved.add(childItem);
+                    any = true;
+                }
+                if (!any) break;
             }
-            children.forEach((ch, idx) => {
-                const ord = String(override.has(ch) ? override.get(ch) : idx * 20);
+            children.forEach((ch) => {
+                const ord = String(Math.round(orderMap.get(ch)));
                 if (ch.style.order !== ord) ch.style.order = ord;
                 ch.setAttribute('data-cp-ordered', '1');
                 orderedEls.add(ch);
@@ -318,7 +410,7 @@ function installCtxPilotOverviewHub() {
         const links = loadSubLinks();
         const sig = state && state.chatSignals;
         const active = rows.length ? findActiveSidebarRow(rows) : null;
-        const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
+        const activeTitle = (active && active.title) || cleanSidebarTitle(findActiveHeaderTitle() || (state && state.activeConvTitle));
         if (!sig?.isSubChat && !isPlaceholderTitle(activeTitle)) lastNormalChatTitle = activeTitle;
 
         let changed = false;
@@ -328,11 +420,11 @@ function installCtxPilotOverviewHub() {
                 if (Array.isArray(l.knownBefore) && l.knownBefore.length) {
                     const beforeSet = new Set(l.knownBefore);
                     const createdRow = rows.find(r => {
-                        const t = cleanSidebarTitle(r.text);
-                        return !isPlaceholderTitle(t) && t !== l.parentTitle && !beforeSet.has(t.toLowerCase());
+                        const t = r.title;
+                        return !isPlaceholderTitle(t) && t !== l.parentTitle && !beforeSet.has(t.toLowerCase()) && (r === active || hasTimeSuffix(r.text));
                     });
                     if (createdRow) {
-                        l.childTitle = cleanSidebarTitle(createdRow.text);
+                        l.childTitle = createdRow.title;
                         delete l.knownBefore;
                         changed = true;
                     }
@@ -356,15 +448,28 @@ function installCtxPilotOverviewHub() {
             if (sig && sig.isSubChat) {
                 const known = links.some(l => (l.childTitle && l.childTitle.slice(0, 16).toLowerCase() === activeTitle.slice(0, 16).toLowerCase()) || (sig.parentConvId && l.parentConvId === sig.parentConvId && l.childTitle));
                 if (!known) {
+                    const backendParent = ((state && state.subChats) || []).find(s => s.parentConvId === sig.parentConvId && s.parentTitle);
                     links.unshift({
                         id: Date.now().toString(36),
-                        parentTitle: lastNormalChatTitle || sig.parentConvId || 'Parent Chat',
+                        parentTitle: (backendParent && backendParent.parentTitle) || lastNormalChatTitle || sig.parentConvId || 'Parent Chat',
                         parentConvId: sig.parentConvId || '',
                         topic: activeTitle.slice(0, 32),
                         childTitle: activeTitle,
                         createdAt: Date.now(),
                     });
                     changed = true;
+                }
+                const recKey = `${(state && state.activeConvId) || ''}:${activeTitle}`;
+                const alreadyInBackend = ((state && state.subChats) || []).some(s => s.convId === (state && state.activeConvId) && s.title === activeTitle);
+                if (!alreadyInBackend && !recordedSubTitles.has(recKey)) {
+                    recordedSubTitles.add(recKey);
+                    const linkMatch = links.find(l => l.parentConvId === sig.parentConvId);
+                    invoke('ctxpilot:record-subchat-title', {
+                        convId: (state && state.activeConvId) || '',
+                        title: activeTitle,
+                        parentConvId: sig.parentConvId || '',
+                        parentTitle: (linkMatch && linkMatch.parentTitle) || '',
+                    }).catch(() => {});
                 }
             }
         }
@@ -375,17 +480,37 @@ function installCtxPilotOverviewHub() {
         const wanted = new Set();
         const wantedArrows = new Set();
         const orderPairs = [];
+        const pairedChildren = new Set();
+        const addPair = (parentRow, childRow) => {
+            if (!parentRow || !childRow || parentRow.el === childRow.el || pairedChildren.has(childRow.el)) return;
+            pairedChildren.add(childRow.el);
+            orderPairs.push({ parentEl: parentRow.el, childEl: childRow.el });
+        };
         const markRow = (row, tip) => {
             wanted.add(row.el);
             if (row.el.getAttribute('data-cp-subchild') !== '1') row.el.setAttribute('data-cp-subchild', '1');
             if (tip && row.el.title !== tip) row.el.title = tip;
-            const leaf = findRowTitleLeaf(row.el);
+            const leaf = row.leaf || findRowTitleLeaf(row.el);
             wantedArrows.add(leaf);
             if (leaf.getAttribute('data-cp-subarrow') !== '1') leaf.setAttribute('data-cp-subarrow', '1');
         };
 
+        for (const sc of (state && state.subChats) || []) {
+            if (!sc || !sc.title) continue;
+            const childNeedle = sc.title.slice(0, 20).toLowerCase();
+            const parentRow = sc.parentTitle ? matchRowByTitle(rows, sc.parentTitle) : null;
+            for (const r of rows) {
+                if (r.title.toLowerCase().includes(childNeedle) || r.text.toLowerCase().includes(childNeedle)) {
+                    markRow(r, `Sub-chat of ${sc.parentTitle || sc.parentConvId || 'parent chat'}${sc.topic ? ` (${sc.topic})` : ''}`);
+                    addPair(parentRow, r);
+                }
+            }
+        }
         if (sig && sig.isSubChat && active) {
             markRow(active, `Sub-chat of ${sig.parentConvId || 'parent chat'}`);
+            const pLink = links.find(l => l.parentConvId === sig.parentConvId && l.parentTitle);
+            const pRow = pLink ? matchRowByTitle(rows, pLink.parentTitle) : null;
+            addPair(pRow, active);
         }
         for (const r of rows) {
             if (/^(isolated sub-chat|sub-chat:|wt:\s)/i.test(r.text)) {
@@ -396,12 +521,11 @@ function installCtxPilotOverviewHub() {
             if (!link.childTitle) continue;
             const childNeedle = link.childTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
             if (!childNeedle) continue;
-            const pNeedle = (link.parentTitle || '').replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
-            const parentRow = pNeedle ? rows.find(r => r.text.toLowerCase().includes(pNeedle)) : null;
+            const parentRow = link.parentTitle ? matchRowByTitle(rows, link.parentTitle) : null;
             for (const r of rows) {
-                if (r.text.toLowerCase().includes(childNeedle)) {
+                if (r.title.toLowerCase().includes(childNeedle) || r.text.toLowerCase().includes(childNeedle)) {
                     markRow(r, `Sub-chat of ${link.parentTitle} (${link.topic})`);
-                    if (parentRow && parentRow.el !== r.el) orderPairs.push({ parentEl: parentRow.el, childEl: r.el });
+                    addPair(parentRow, r);
                 }
             }
         }
@@ -515,6 +639,7 @@ function installCtxPilotOverviewHub() {
             state.fixes?.map(f => f.id), (state.checkpoints || []).map(c => c.id), (state.worktrees || []).map(w => w.branch), (state.timeline || []).length,
             showSubChat, statusMsg, verifyState, gateMsg, state.workspace, state.workspacePinned, state.verifyCmd,
             state.meta, state.profileHint, state.bloatAlert, expandedSrv, open, history.map(h => [h.id, h.peak]),
+            state.activeConvTitle, (state.subChats || []).map(s => [s.convId, s.title]),
             loadSubLinks().map(l => [l.id, l.childTitle]),
         ]);
     }
@@ -611,7 +736,7 @@ function installCtxPilotOverviewHub() {
     function subchatsBody() {
         const links = loadSubLinks();
         if (!links.length) return '';
-        const activeTitle = cleanSidebarTitle(findActiveHeaderTitle());
+        const activeTitle = cleanSidebarTitle(findActiveHeaderTitle() || (state && state.activeConvTitle));
         return `<div style="display:flex;flex-direction:column;gap:2px;max-height:110px;overflow-y:auto;">${links.map(l => {
             const onChild = Boolean(l.childTitle && activeTitle && activeTitle.slice(0, 16).toLowerCase() === l.childTitle.replace(/\.{3}$/, '').slice(0, 16).toLowerCase());
             const targetLabel = onChild ? 'Parent' : 'Go';
@@ -806,12 +931,13 @@ function installCtxPilotOverviewHub() {
             flashStatus(`Rewound to ${cp.label}`);
         });
         bind('#cp-bar-parent', () => {
-            const activeTitle = cleanSidebarTitle(findActiveHeaderTitle());
+            const activeTitle = cleanSidebarTitle(findActiveHeaderTitle() || (state && state.activeConvTitle));
             const link = loadSubLinks().find(l => (l.childTitle && activeTitle && l.childTitle.slice(0, 16).toLowerCase() === activeTitle.slice(0, 16).toLowerCase()) || (sig.parentConvId && l.parentConvId === sig.parentConvId));
-            const needle = link && link.parentTitle ? link.parentTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase() : '';
-            const target = needle ? findSidebarConvRows().find(r => r.text.toLowerCase().includes(needle)) : null;
+            const backend = ((state && state.subChats) || []).find(s => s.parentConvId === sig.parentConvId && s.parentTitle);
+            const pTitle = (link && link.parentTitle) || (backend && backend.parentTitle) || '';
+            const target = pTitle ? matchRowByTitle(findSidebarConvRows(), pTitle) : null;
             if (target) target.el.click();
-            else flashStatus(`Click parent "${(link && link.parentTitle) || sig.parentConvId || 'chat'}" in sidebar`);
+            else flashStatus(`Click parent "${pTitle || sig.parentConvId || 'chat'}" in sidebar`);
         });
         bind('#cp-bar-subresult', async () => {
             const res = await invoke('ctxpilot:subchat-result', {});
@@ -1015,11 +1141,10 @@ function installCtxPilotOverviewHub() {
             on('.cp-sub-go', (el) => {
                 const link = loadSubLinks().find(l => l.id === el.dataset.id);
                 if (!link) return;
-                const activeTitle = cleanSidebarTitle(findActiveHeaderTitle());
+                const activeTitle = cleanSidebarTitle(findActiveHeaderTitle() || (state && state.activeConvTitle));
                 const onChild = Boolean(link.childTitle && activeTitle && activeTitle.slice(0, 16).toLowerCase() === link.childTitle.replace(/\.{3}$/, '').slice(0, 16).toLowerCase());
                 const targetTitle = onChild ? link.parentTitle : (link.childTitle || link.parentTitle);
-                const needle = (targetTitle || '').replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
-                const row = needle ? findSidebarConvRows().find(r => r.text.toLowerCase().includes(needle)) : null;
+                const row = targetTitle ? matchRowByTitle(findSidebarConvRows(), targetTitle) : null;
                 if (row) { row.el.click(); setTimeout(() => sync(true), 450); }
                 else flashStatus(`Sidebar row not visible for "${targetTitle}"`);
             });

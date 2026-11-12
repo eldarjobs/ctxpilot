@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { getPaths, tryParseJson } = require('./discovery');
+const { getPaths, tryParseJson, extractProjectFolders } = require('./discovery');
 const { estTokensFromBytes } = require('./context');
 
 const TAIL_BYTES = 2 * 1024 * 1024;
@@ -319,6 +319,176 @@ function buildSubChat(opts = {}) {
     };
 }
 
+const SUBCHAT_HEADER_RE = /(?:[#>]+\s*)?(?:Isolated|Forked) Sub-Chat \((?:branched )?from ([a-f0-9-]+)[^)]*\)/i;
+
+function readSlice(file, offset, length) {
+    const fd = fs.openSync(file, 'r');
+    try {
+        const buf = Buffer.alloc(length);
+        const bytesRead = fs.readSync(fd, buf, 0, length, offset);
+        return buf.subarray(0, bytesRead).toString('utf8');
+    } finally {
+        fs.closeSync(fd);
+    }
+}
+
+function readFirstUserPrompt(file, totalSize) {
+    if (!totalSize) return '';
+    const head = readSlice(file, 0, Math.min(totalSize, 32 * 1024));
+    for (const line of head.split(/\r?\n/)) {
+        if (!line.includes('USER_INPUT')) continue;
+        try {
+            const o = JSON.parse(line);
+            if (o && o.type === 'USER_INPUT' && typeof o.content === 'string') {
+                return cleanPromptText(o.content);
+            }
+        } catch {}
+    }
+    return '';
+}
+
+function listProjectNames(cfgDir) {
+    const names = new Set(['outside of project']);
+    const projDir = path.join(cfgDir, 'projects');
+    if (!fs.existsSync(projDir)) return [...names];
+    try {
+        for (const f of fs.readdirSync(projDir)) {
+            if (!f.endsWith('.json')) continue;
+            const parsed = tryParseJson(path.join(projDir, f));
+            const d = parsed.data;
+            if (!d || typeof d !== 'object') continue;
+            if (typeof d.name === 'string' && d.name.trim()) names.add(d.name.trim());
+            for (const folder of extractProjectFolders(d)) {
+                const base = path.basename(folder);
+                if (base) names.add(base);
+                names.add(folder);
+            }
+        }
+    } catch {}
+    return [...names];
+}
+
+function readConversationSummaries(brainDir) {
+    const byId = new Map();
+    if (!brainDir) return byId;
+    const dbPath = path.join(path.dirname(brainDir), 'conversation_summaries.db');
+    if (!fs.existsSync(dbPath)) return byId;
+    try {
+        const { DatabaseSync } = require('node:sqlite');
+        const db = new DatabaseSync(dbPath, { readOnly: true });
+        try {
+            const rows = db.prepare(
+                'SELECT conversation_id, title, parent_conversation_id FROM conversation_summaries ORDER BY last_modified_time DESC LIMIT 150',
+            ).all();
+            for (const r of rows) {
+                const id = String(r.conversation_id || '');
+                const info = {
+                    convId: id,
+                    title: String(r.title || '').trim(),
+                    parentConvId: String(r.parent_conversation_id || '').trim(),
+                };
+                if (id) {
+                    byId.set(id, info);
+                    byId.set(id.slice(0, 8), info);
+                }
+            }
+        } finally {
+            db.close();
+        }
+    } catch {}
+    return byId;
+}
+
+function subChatsFilePath(opts = {}) {
+    return path.join(getPaths(opts).cfgDir, 'ctxpilot_subchats.json');
+}
+
+function readSubChatStore(file) {
+    const parsed = tryParseJson(file);
+    return Array.isArray(parsed.data) ? parsed.data : [];
+}
+
+/**
+ * Persists a discovered sub-chat title mapping so sidebar grouping survives restarts even without DB access.
+ */
+function recordSubChatTitle(entry, opts = {}) {
+    if (!entry || (!entry.convId && !entry.title)) return null;
+    const file = subChatsFilePath(opts);
+    const items = readSubChatStore(file);
+    const convId = String(entry.convId || '').slice(0, 8);
+    const title = String(entry.title || '').trim().slice(0, 80);
+    const parentConvId = String(entry.parentConvId || '').slice(0, 8);
+    const parentTitle = String(entry.parentTitle || '').trim().slice(0, 80);
+    if (!title && !convId) return null;
+    const filtered = items.filter(x => !(convId && x.convId === convId) && !(title && x.title === title));
+    const next = [{ convId, title, parentConvId, parentTitle, updatedAt: Date.now() }, ...filtered].slice(0, 60);
+    if (!opts.dryRun) {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, JSON.stringify(next, null, 2) + '\n', 'utf8');
+    }
+    return next;
+}
+
+/**
+ * Lists known sub-chats and Antigravity project folder names for accurate sidebar labeling and grouping.
+ */
+function listSubChats(opts = {}) {
+    const paths = getPaths(opts);
+    const projectNames = listProjectNames(paths.cfgDir);
+    const summaries = readConversationSummaries(paths.brainDir);
+    const stored = readSubChatStore(subChatsFilePath(opts));
+    const storedByConv = new Map();
+    for (const s of stored) {
+        if (s && s.convId) storedByConv.set(s.convId.slice(0, 8), s);
+    }
+
+    const activeFound = findTranscriptFile(paths.brainDir, opts.conv);
+    const activeConvId = activeFound ? activeFound.convId.slice(0, 8) : '';
+    const activeSummary = activeConvId ? (summaries.get(activeFound.convId) || summaries.get(activeConvId)) : null;
+    const activeConvTitle = (activeSummary && activeSummary.title) || (activeConvId && storedByConv.get(activeConvId)?.title) || '';
+
+    const entries = [];
+    if (paths.brainDir && fs.existsSync(paths.brainDir)) {
+        try {
+            for (const ent of fs.readdirSync(paths.brainDir, { withFileTypes: true })) {
+                if (!ent.isDirectory()) continue;
+                const f = path.join(paths.brainDir, ent.name, '.system_generated', 'logs', 'transcript.jsonl');
+                try {
+                    const st = fs.statSync(f);
+                    if (st.size > 0) entries.push({ convId: ent.name, file: f, size: st.size, mtimeMs: st.mtimeMs });
+                } catch {}
+            }
+        } catch {}
+    }
+    entries.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    const subChats = [];
+    const seen = new Set();
+    for (const ent of entries.slice(0, 50)) {
+        const shortId = ent.convId.slice(0, 8);
+        const firstUser = readFirstUserPrompt(ent.file, ent.size);
+        const m = firstUser.match(SUBCHAT_HEADER_RE);
+        const sum = summaries.get(ent.convId) || summaries.get(shortId);
+        const parentRaw = (m && m[1]) || (sum && sum.parentConvId) || '';
+        if (!parentRaw) continue;
+        const parentId = parentRaw.slice(0, 8);
+        const pSum = summaries.get(parentRaw) || summaries.get(parentId);
+        const stItem = storedByConv.get(shortId);
+        const title = (sum && sum.title) || (stItem && stItem.title) || '';
+        const parentTitle = (pSum && pSum.title) || (stItem && stItem.parentTitle) || '';
+        const topicMatch = firstUser.match(/#\s*Sub-Chat:\s*([^\n>]+?)(?:\s+>\s*Isolated|\s+-\s*Workspace:|$)/i);
+        const topic = topicMatch ? topicMatch[1].trim().slice(0, 48) : '';
+        seen.add(shortId);
+        subChats.push({ convId: shortId, title, parentConvId: parentId, parentTitle, topic });
+    }
+    for (const s of stored) {
+        if (!s || !s.title || (s.convId && seen.has(s.convId))) continue;
+        if (s.parentConvId) subChats.push({ convId: s.convId || '', title: s.title, parentConvId: s.parentConvId, parentTitle: s.parentTitle || '', topic: '' });
+    }
+
+    return { activeConvId, activeConvTitle, projectNames, subChats };
+}
+
 /**
  * Extracts lightweight contextual hints from the tail of the latest transcript for UI action buttons.
  */
@@ -329,25 +499,20 @@ function getChatSignals(opts = {}) {
         const found = findTranscriptFile(paths.brainDir, opts.conv);
         if (!found) return empty;
         const st = fs.statSync(found.file);
+        const firstUser = readFirstUserPrompt(found.file, st.size);
         const size = Math.min(st.size, 64 * 1024);
-        const fd = fs.openSync(found.file, 'r');
-        const buf = Buffer.alloc(size);
-        fs.readSync(fd, buf, 0, size, st.size - size);
-        fs.closeSync(fd);
+        const tail = size > 0 ? readSlice(found.file, st.size - size, size) : '';
         let lastText = '';
-        let firstUser = '';
-        for (const line of buf.toString('utf8').split(/\r?\n/)) {
-            if (!line.includes('PLANNER_RESPONSE') && !line.includes('USER_INPUT')) continue;
+        for (const line of tail.split(/\r?\n/)) {
+            if (!line.includes('PLANNER_RESPONSE')) continue;
             try {
                 const o = JSON.parse(line);
-                if (!firstUser && o.type === 'USER_INPUT' && typeof o.content === 'string') {
-                    firstUser = cleanPromptText(o.content);
-                } else if (o.type === 'PLANNER_RESPONSE' && typeof o.content === 'string' && o.content.trim()) {
+                if (o.type === 'PLANNER_RESPONSE' && typeof o.content === 'string' && o.content.trim()) {
                     lastText = cleanPromptText(o.content);
                 }
             } catch {}
         }
-        const parentMatch = firstUser.match(/(?:[#>]+\s*)?(?:Isolated|Forked) Sub-Chat \((?:branched )?from ([a-f0-9-]+)[^)]*\)/i);
+        const parentMatch = firstUser.match(SUBCHAT_HEADER_RE);
         const isSubChat = Boolean(parentMatch);
         const parentConvId = parentMatch ? parentMatch[1] : '';
         if (!lastText) return { ...empty, isSubChat, parentConvId };
@@ -490,4 +655,7 @@ module.exports = {
     getChatSignals,
     buildSubChatResult,
     getQuickDiffContext,
+    listSubChats,
+    recordSubChatTitle,
+    listProjectNames,
 };

@@ -301,6 +301,7 @@ module.exports = {
     RULE_MAX_BYTES,
     RULES_AGGREGATE_TOKEN_BUDGET,
     tryParseJson,
+    extractProjectFolders,
     resolveWorkspace,
     getPaths,
     discoverMcp,
