@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('os');
 const path = require('path');
-const { buildHandoff, buildSubChat, listFixes, addFix, removeFix, getChatSignals } = require('../src/handoff');
+const { buildHandoff, buildSubChat, listFixes, addFix, removeFix, getChatSignals, buildSubChatResult } = require('../src/handoff');
 
 describe('Handoff, Sub-Chat & Saved Fixes', () => {
     let tmp, home, ws, convDir;
@@ -72,5 +72,22 @@ describe('Handoff, Sub-Chat & Saved Fixes', () => {
 
         const sig = getChatSignals({ homeDir: home, workspaceDir: ws });
         assert.match(sig.fixHint, /missing \.\/patcher/);
+
+        // Simulate being inside an active Sub-Chat branched from abc12345
+        const subConv = path.join(home, '.gemini', 'antigravity', 'brain', 'sub99999-conv', '.system_generated', 'logs');
+        fs.mkdirSync(subConv, { recursive: true });
+        fs.writeFileSync(path.join(subConv, 'transcript.jsonl'), [
+            JSON.stringify({ type: 'USER_INPUT', content: sub.markdown }),
+            JSON.stringify({ type: 'PLANNER_RESPONSE', content: 'Found an unrelated lint warning; want me to fix it in a sub-session? Fixed lock handling cleanly.' }),
+        ].join('\n') + '\n');
+
+        const subSig = getChatSignals({ homeDir: home, workspaceDir: ws, conv: 'sub99999-conv' });
+        assert.equal(subSig.isSubChat, true);
+        assert.equal(subSig.parentConvId, 'abc12345');
+        assert.match(subSig.subChatOffer, /unrelated/i);
+
+        const res = buildSubChatResult({ homeDir: home, workspaceDir: ws, conv: 'sub99999-conv' });
+        assert.equal(res.parentConvId, 'abc12345');
+        assert.match(res.summary, /\[Sub-Chat sub99999 result\]/);
     });
 });

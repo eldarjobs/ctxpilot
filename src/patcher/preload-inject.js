@@ -315,7 +315,7 @@ function installCtxPilotOverviewHub() {
         const docIssue = (d.findings || []).find(f => f.level === 'FAIL' || f.level === 'WARN');
         const subTopic = sig.issueTopic || (docIssue ? `${docIssue.category}: ${docIssue.message}` : '');
 
-        const key = JSON.stringify([anchor.inReviewRow, m.dirtyCount, m.mapFile, ctxPct, sig.asksProceed, subTopic, docIssue?.message, statusMsg]);
+        const key = JSON.stringify([anchor.inReviewRow, m.dirtyCount, m.mapFile, ctxPct, sig.asksProceed, sig.isSubChat, sig.subChatOffer, subTopic, docIssue?.message, statusMsg]);
         if (bar.dataset.key === key) return;
         bar.dataset.key = key;
 
@@ -324,10 +324,12 @@ function installCtxPilotOverviewHub() {
         const okBtn = 'background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.45);color:#34d399;border-radius:4px;font-weight:600;cursor:pointer;';
 
         const actions = [];
+        if (sig.isSubChat) actions.push(pill('cp-bar-subresult', `Copy Result -> ${sig.parentConvId || 'Parent'}`, okBtn, 'Copy sub-chat summary to paste back into the parent chat'));
         if (sig.asksProceed) actions.push(pill('cp-bar-proceed', 'Proceed', S.btn, 'Send "Proceed with the next step."'));
         if (m.dirtyCount > 0) actions.push(pill('cp-bar-commit', `Commit & Push (${m.dirtyCount})`, okBtn, 'Ask agent to review diff, commit, and push'));
-        if (subTopic || d.summary?.warn || d.summary?.fail) actions.push(pill('cp-bar-subchat', 'Sub-Chat: Investigate', warnBtn, `Isolate issue in a Sub-Chat: ${subTopic || 'doctor warning'}`));
-        else actions.push(pill('cp-bar-subchat', 'Sub-Chat', S.ghost, 'Start an isolated Sub-Chat for a side task'));
+        if (sig.subChatOffer) actions.push(pill('cp-bar-subchat', 'Open Sub-Chat', S.btn, `Branch offered side-task into an isolated Sub-Chat: ${sig.subChatOffer}`));
+        else if (subTopic || d.summary?.warn || d.summary?.fail) actions.push(pill('cp-bar-subchat', 'Sub-Chat: Investigate', warnBtn, `Isolate issue in a Sub-Chat: ${subTopic || 'doctor warning'}`));
+        else if (!sig.isSubChat) actions.push(pill('cp-bar-subchat', 'Sub-Chat', S.ghost, 'Start an isolated Sub-Chat for a side task'));
         if (ctxPct >= 65) actions.push(pill('cp-bar-handoff', `Handoff (${ctxPct}%)`, warnBtn, 'Context is high — compact into a lean New Chat handoff'));
         if (!anchor.inReviewRow && m.mapFile) actions.push(pill('cp-inj-map', `+${m.mapFile}`, S.ghost, `Insert ${m.mapFile} context into chat`));
         if (!anchor.inReviewRow && m.dirtyCount > 0) actions.push(pill('cp-inj-diff', '+git diff', S.ghost, 'Insert git status & diff stat into chat'));
@@ -336,6 +338,13 @@ function installCtxPilotOverviewHub() {
         bar.innerHTML = `${actions.join('')}${msgChip}`;
 
         const bind = (id, fn) => { const el = bar.querySelector(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+        bind('#cp-bar-subresult', async () => {
+            const res = await invoke('ctxpilot:subchat-result', {});
+            if (res && res.summary) {
+                try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(res.summary); } catch {}
+                flashStatus(`Copied result — switch to ${res.parentConvId || 'parent chat'} & Ctrl+V`);
+            }
+        });
         bind('#cp-bar-proceed', () => sendPrompt('Proceed with the next step.'));
         bind('#cp-bar-commit', () => sendPrompt('Review git status and diff, commit the relevant changes cleanly, and push to origin.'));
         bind('#cp-bar-subchat', async () => {

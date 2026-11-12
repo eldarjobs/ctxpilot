@@ -320,10 +320,11 @@ function buildSubChat(opts = {}) {
  * Extracts lightweight contextual hints from the tail of the latest transcript for UI action buttons.
  */
 function getChatSignals(opts = {}) {
+    const empty = { fixHint: '', asksProceed: false, issueTopic: '', subChatOffer: '', isSubChat: false, parentConvId: '', lastSummary: '' };
     try {
         const paths = getPaths(opts);
         const found = findTranscriptFile(paths.brainDir, opts.conv);
-        if (!found) return { fixHint: '', asksProceed: false, issueTopic: '' };
+        if (!found) return empty;
         const st = fs.statSync(found.file);
         const size = Math.min(st.size, 64 * 1024);
         const fd = fs.openSync(found.file, 'r');
@@ -331,25 +332,46 @@ function getChatSignals(opts = {}) {
         fs.readSync(fd, buf, 0, size, st.size - size);
         fs.closeSync(fd);
         let lastText = '';
+        let firstUser = '';
         for (const line of buf.toString('utf8').split(/\r?\n/)) {
-            if (!line.includes('PLANNER_RESPONSE')) continue;
+            if (!line.includes('PLANNER_RESPONSE') && !line.includes('USER_INPUT')) continue;
             try {
                 const o = JSON.parse(line);
-                if (o.type === 'PLANNER_RESPONSE' && typeof o.content === 'string' && o.content.trim()) {
+                if (!firstUser && o.type === 'USER_INPUT' && typeof o.content === 'string') {
+                    firstUser = cleanPromptText(o.content);
+                } else if (o.type === 'PLANNER_RESPONSE' && typeof o.content === 'string' && o.content.trim()) {
                     lastText = cleanPromptText(o.content);
                 }
             } catch {}
         }
-        if (!lastText) return { fixHint: '', asksProceed: false, issueTopic: '' };
+        const parentMatch = firstUser.match(/# Isolated Sub-Chat \(branched from ([a-f0-9-]+)\)/i);
+        const isSubChat = Boolean(parentMatch);
+        const parentConvId = parentMatch ? parentMatch[1] : '';
+        if (!lastText) return { ...empty, isSubChat, parentConvId };
+
         const firstSentence = lastText.split(/(?<=[.!?])\s+/)[0].slice(0, 110).trim();
         const fixHint = /\b(fix(ed)?|root cause|resolved|bug|crash|workaround|düzəl|səbəb)\b/i.test(lastText) ? firstSentence : '';
         const asksProceed = /\?|\b(proceed|continue|confirm|next step|ready|hazır|edək|edim)\b/i.test(lastText.slice(-300));
+        const offerMatch = lastText.match(/[^.!?]*\b(unrelated|side[\s-]?(?:issue|task|bug)|separate\s+(?:chat|session)|sub[\s-]?(?:chat|session|agent)|alt\s*(?:session|chat)|dexlisiz|ayrıca)\b[^.!?]*/i);
+        const subChatOffer = offerMatch ? offerMatch[0].trim().slice(0, 90) : '';
         const issueMatch = lastText.match(/[^.!?]*\b(fail(ed|ing)?|error|warn(ing)?|flake|broken|exception|timeout)\b[^.!?]*/i);
-        const issueTopic = issueMatch ? issueMatch[0].trim().slice(0, 90) : '';
-        return { fixHint, asksProceed, issueTopic };
+        const issueTopic = subChatOffer || (issueMatch ? issueMatch[0].trim().slice(0, 90) : '');
+        const lastSummary = lastText.slice(0, 800);
+        return { fixHint, asksProceed, issueTopic, subChatOffer, isSubChat, parentConvId, lastSummary };
     } catch {
-        return { fixHint: '', asksProceed: false, issueTopic: '' };
+        return empty;
     }
+}
+
+function buildSubChatResult(opts = {}) {
+    const sig = getChatSignals(opts);
+    const paths = getPaths(opts);
+    const found = findTranscriptFile(paths.brainDir, opts.conv);
+    const convTag = found ? found.convId.slice(0, 8) : 'subchat';
+    const summary = sig.lastSummary
+        ? `[Sub-Chat ${convTag} result]:\n${sig.lastSummary}`
+        : `[Sub-Chat ${convTag} result]: (no assistant summary found yet)`;
+    return { convId: found ? found.convId : null, parentConvId: sig.parentConvId, summary };
 }
 
 function getQuickDiffContext(workspaceDir) {
@@ -378,5 +400,6 @@ module.exports = {
     addFix,
     removeFix,
     getChatSignals,
+    buildSubChatResult,
     getQuickDiffContext,
 };

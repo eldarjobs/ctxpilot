@@ -9,7 +9,7 @@
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
     const { parkServer: cpPark, unparkServer: cpUnpark, setReadonly: cpSetRo, applyProfile: cpApplyProfile, listProfiles: cpListProfiles } = require(path.join(cpCoreDir, 'mcp-control.js'));
     const { recommendProfile: cpRecommendProfile } = require(path.join(cpCoreDir, 'stack.js'));
-    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
+    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, buildSubChatResult: cpBuildSubChatResult, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
 
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
@@ -319,6 +319,12 @@
     electron_1.ipcMain.handle('ctxpilot:subchat', async (_e, p) => {
         const res = cpBuildSubChat(cpActiveOpts({ topic: p && p.topic, conv: p && p.conv }));
         try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        return res;
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:subchat-result', async (_e, p) => {
+        const res = cpBuildSubChatResult(cpActiveOpts({ conv: p && p.conv }));
+        try { if (electron_1.clipboard && res.summary) electron_1.clipboard.writeText(res.summary); } catch {}
         return res;
     });
 
