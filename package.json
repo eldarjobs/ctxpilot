@@ -3,8 +3,8 @@
   "version": "0.5.0",
   "description": "Zero-dependency context budget analyzer, multi-client MCP & secret doctor, git checkpoint/rewind, silent verify, and Antigravity Overview Hub.",
   "bin": {
-    "ctxpilot": "./bin/ctxpilot.js",
-    "ctx": "./bin/ctxpilot.js"
+    "ctxpilot": "bin/ctxpilot.js",
+    "ctx": "bin/ctxpilot.js"
   },
   "files": [
     "bin/",
@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/eldarjobs/ctxpilot.git"
+    "url": "git+https://github.com/eldarjobs/ctxpilot.git"
   },
   "license": "MIT",
   "scripts": {

@@ -35,14 +35,14 @@ flowchart LR
 Run directly without installing (Node.js 18+):
 
 ```bash
-npx github:eldarjobs/ctxpilot doctor --fix-suggest
-npx github:eldarjobs/ctxpilot context
+npx ctxpilot doctor --fix-suggest
+npx ctxpilot context
 ```
 
 Or install globally (provides both `ctxpilot` and `ctx` commands):
 
 ```bash
-npm install -g github:eldarjobs/ctxpilot
+npm install -g ctxpilot
 ctx patch install --restart   # Optional: injects CTXPILOT hub & inline chat actions into Antigravity
 ```
 
