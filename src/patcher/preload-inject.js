@@ -65,26 +65,48 @@ function installCtxPilotOverviewHub() {
     }
 
     function loadSubLinks() {
-        try { return JSON.parse(localStorage.getItem('ctxPilotSubChatLinks') || '[]'); } catch { return []; }
+        try {
+            const raw = JSON.parse(localStorage.getItem('ctxPilotSubChatLinks') || '[]');
+            return Array.isArray(raw) ? raw.filter(l => l && l.parentTitle && !/^(\+\s*)?(new\s*(conversation|chat)|automations|customizations|pinned|projects)/i.test(l.parentTitle)) : [];
+        } catch { return []; }
     }
     function saveSubLinks(list) {
         try { localStorage.setItem('ctxPilotSubChatLinks', JSON.stringify(list.slice(0, 15))); } catch {}
+    }
+
+    function findActiveHeaderTitle() {
+        for (const el of document.querySelectorAll('div, span')) {
+            const r = el.getBoundingClientRect();
+            if (r.top < 0 || r.top > 48 || r.left < 120 || r.height > 36 || r.width < 80) continue;
+            const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            const idx = t.indexOf(' / ');
+            if (idx > 0 && t.length < 140 && el.children.length <= 4) {
+                return t.slice(idx + 3).trim();
+            }
+        }
+        return '';
     }
 
     function findSidebarConvRows() {
         const hub = document.getElementById('ctxpilot-overview-hub');
         const bar = document.getElementById('ctxpilot-inline-actions');
         const tree = document.getElementById('ctxpilot-sidebar-tree');
+        let minTop = 240;
+        for (const el of document.querySelectorAll('div, span, button')) {
+            const r = el.getBoundingClientRect();
+            if (r.left < 0 || r.left > 180 || r.top < 60 || r.height > 32) continue;
+            if ((el.textContent || '').trim() === 'Projects') { minTop = Math.max(minTop, r.bottom + 4); break; }
+        }
         const rows = [];
-        const skipRe = /^(new chat|inbox|start conversation|settings|extensions|review|files|terminal|workspaces|open)$/i;
+        const skipRe = /^(\+\s*new|new chat|new conversation|inbox|automations|customizations|pinned|projects|settings|extensions|review|files|terminal|workspaces|open|see all)/i;
         const wsName = (state && state.meta && state.meta.name || '').toLowerCase();
         for (const el of document.querySelectorAll('div, button, a, [role="button"], [role="listitem"]')) {
             if ((hub && hub.contains(el)) || (bar && bar.contains(el)) || (tree && tree.contains(el))) continue;
             const r = el.getBoundingClientRect();
-            if (r.left < 0 || r.left > 280 || r.width < 110 || r.width > 340 || r.height < 22 || r.height > 46) continue;
+            if (r.top < minTop || r.left < 0 || r.left > 240 || r.width < 110 || r.width > 300 || r.height < 22 || r.height > 42) continue;
             const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
             if (!txt || txt.length > 90 || skipRe.test(txt) || txt.toLowerCase() === wsName) continue;
-            // Prefer leaf-ish interactive rows (avoid outer wrapper containers that hold multiple rows)
+            if (/[\\\/]/.test(txt) && txt.includes(':')) continue;
             if (el.querySelector('[role="listitem"], [role="button"]') && el.children.length > 3) continue;
             rows.push({ el, rect: r, text: txt });
         }
@@ -92,6 +114,12 @@ function installCtxPilotOverviewHub() {
     }
 
     function findActiveSidebarRow(rows) {
+        const hdr = findActiveHeaderTitle();
+        if (hdr) {
+            const needle = hdr.slice(0, 18).toLowerCase();
+            const byHdr = rows.find(r => r.text.toLowerCase().includes(needle));
+            if (byHdr) return byHdr;
+        }
         for (const row of rows) {
             const cs = getComputedStyle(row.el);
             const hasBg = cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
@@ -101,10 +129,12 @@ function installCtxPilotOverviewHub() {
         return rows[0] || null;
     }
 
+    const cleanSidebarTitle = (s) => String(s || '').replace(/\s+(now|\d+[smhd])$/i, '').trim().slice(0, 48);
+
     function recordSubChatLink(topic, res) {
         const rows = findSidebarConvRows();
         const active = findActiveSidebarRow(rows);
-        const parentTitle = active ? active.text.slice(0, 48) : '';
+        const parentTitle = active ? cleanSidebarTitle(active.text) : cleanSidebarTitle(findActiveHeaderTitle());
         if (!parentTitle) return;
         const list = loadSubLinks();
         list.unshift({
@@ -129,12 +159,13 @@ function installCtxPilotOverviewHub() {
 
         const rows = findSidebarConvRows();
         const active = findActiveSidebarRow(rows);
+        const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
         const sig = state && state.chatSignals;
-        if (sig && sig.isSubChat && active) {
+        if (sig && sig.isSubChat && activeTitle) {
             let changed = false;
             for (const l of links) {
-                if (!l.childTitle && active.text !== l.parentTitle && (!sig.parentConvId || l.parentConvId === sig.parentConvId)) {
-                    l.childTitle = active.text.slice(0, 48);
+                if (!l.childTitle && activeTitle !== l.parentTitle && (!sig.parentConvId || l.parentConvId === sig.parentConvId)) {
+                    l.childTitle = activeTitle;
                     changed = true;
                     break;
                 }
