@@ -392,10 +392,95 @@ function getQuickDiffContext(workspaceDir) {
     }
 }
 
+/**
+ * Builds a per-turn timeline (user prompt, touched files, token footprint) from the active transcript.
+ */
+function buildTurnTimeline(opts = {}) {
+    const paths = getPaths(opts);
+    const found = findTranscriptFile(paths.brainDir, opts.conv);
+    if (!found) return { convId: null, turns: [] };
+    const raw = readTranscriptTail(found.file);
+    const turns = [];
+    let current = null;
+
+    for (const line of raw.split(/\r?\n/)) {
+        if (!line) continue;
+        let obj;
+        try { obj = JSON.parse(line); } catch { continue; }
+        if (!obj || typeof obj !== 'object') continue;
+        if (obj.type === 'USER_INPUT') {
+            const txt = cleanPromptText(obj.content);
+            if (!txt || txt === '/compact') continue;
+            current = {
+                turn: turns.length + 1,
+                prompt: txt.slice(0, 120),
+                filesEdited: [],
+                tokens: 0,
+                outputTokens: 0,
+                assistantSnippet: '',
+            };
+            turns.push(current);
+        } else if (obj.type === 'PLANNER_RESPONSE') {
+            if (!current) {
+                current = { turn: turns.length + 1, prompt: '(session start)', filesEdited: [], tokens: 0, outputTokens: 0, assistantSnippet: '' };
+                turns.push(current);
+            }
+            if (typeof obj.input_tokens === 'number' || typeof obj.cache_read_tokens === 'number') {
+                current.tokens = (Number(obj.input_tokens) || 0) + (Number(obj.cache_read_tokens) || 0);
+            }
+            current.outputTokens += Number(obj.output_tokens) || 0;
+            if (typeof obj.content === 'string' && obj.content.trim()) {
+                current.assistantSnippet = cleanPromptText(obj.content).slice(0, 260);
+            }
+            if (Array.isArray(obj.tool_calls)) {
+                for (const tc of obj.tool_calls) {
+                    const fp = extractFileArg(tc && tc.args);
+                    if (fp && /edit|write|replace/i.test(String(tc && tc.name || ''))) {
+                        const rel = shortPath(fp, paths.workspaceDir);
+                        if (!current.filesEdited.includes(rel)) current.filesEdited.push(rel);
+                    }
+                }
+            }
+        }
+    }
+
+    return { convId: found.convId, turns: turns.slice(-12) };
+}
+
+/**
+ * Forks an isolated Sub-Chat seeded from a specific historical turn in the timeline.
+ */
+function buildSubChatFromTurn(turnNumber, opts = {}) {
+    const paths = getPaths(opts);
+    const tl = buildTurnTimeline(opts);
+    const target = tl.turns.find(t => t.turn === Number(turnNumber)) || tl.turns[tl.turns.length - 1];
+    const git = getGitSnapshot(paths.workspaceDir);
+    const convTag = tl.convId ? tl.convId.slice(0, 8) : null;
+    const lines = [
+        `# Forked Sub-Chat${convTag ? ` (from ${convTag} · Turn ${target ? target.turn : '?'})` : ''}`,
+        `- Workspace: \`${paths.workspaceDir}\`${git.branch ? ` (branch \`${git.branch}\`)` : ''}`,
+    ];
+    if (target) {
+        lines.push(`- Seeded Turn Request: ${target.prompt}`);
+        if (target.filesEdited.length) lines.push('', '## Turn Files', ...target.filesEdited.map(f => `- \`${f}\``));
+        if (target.assistantSnippet) lines.push('', '## State at Fork', target.assistantSnippet);
+    }
+    lines.push('', 'Continue independently from this turn snapshot without carrying full conversation bloat.');
+    const markdown = lines.join('\n');
+    return {
+        convId: tl.convId,
+        turn: target ? target.turn : null,
+        promptTokensEst: estTokensFromBytes(Buffer.byteLength(markdown, 'utf8'), 4.0),
+        markdown,
+    };
+}
+
 module.exports = {
     extractTranscriptSignals,
     buildHandoff,
     buildSubChat,
+    buildTurnTimeline,
+    buildSubChatFromTurn,
     listFixes,
     addFix,
     removeFix,

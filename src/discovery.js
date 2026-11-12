@@ -99,6 +99,13 @@ function getPaths(opts = {}) {
             path.join(geminiDir, 'antigravity', 'mcp_config.json'),
             path.join(geminiDir, 'antigravity-ide', 'mcp_config.json'),
         ],
+        externalMcpConfigs: [
+            { client: 'claude-code', path: path.join(homeDir, '.claude.json') },
+            { client: 'claude-code', path: path.join(workspaceDir, '.mcp.json') },
+            { client: 'cursor', path: path.join(homeDir, '.cursor', 'mcp.json') },
+            { client: 'cursor', path: path.join(workspaceDir, '.cursor', 'mcp.json') },
+            { client: 'windsurf', path: path.join(homeDir, '.codeium', 'windsurf', 'mcp_config.json') },
+        ],
         mcpToolDirs: [
             path.join(geminiDir, 'antigravity', 'mcp'),
             path.join(geminiDir, 'antigravity-ide', 'mcp'),
@@ -113,16 +120,19 @@ function discoverMcp(paths) {
     const configFiles = [];
     const servers = new Map();
 
-    for (const cfgPath of paths.mcpConfigs) {
+    const addFromFile = (cfgPath, client) => {
         const parsed = tryParseJson(cfgPath);
-        if (!parsed.exists) continue;
-        configFiles.push({ path: cfgPath, error: parsed.error });
-        if (!parsed.data || !parsed.data.mcpServers || typeof parsed.data.mcpServers !== 'object') continue;
+        if (!parsed.exists) return;
+        configFiles.push({ path: cfgPath, client, error: parsed.error });
+        if (!parsed.data || !parsed.data.mcpServers || typeof parsed.data.mcpServers !== 'object') return;
         for (const [id, def] of Object.entries(parsed.data.mcpServers)) {
-            if (servers.has(id)) continue;
+            if (!def || typeof def !== 'object') continue;
+            const key = `${client}:${id}`;
+            if (servers.has(key)) continue;
             const transport = def.command ? 'stdio' : (def.serverUrl || def.url) ? 'http' : 'unknown';
-            servers.set(id, {
+            servers.set(key, {
                 id,
+                client,
                 transport,
                 def,
                 source: cfgPath,
@@ -132,15 +142,20 @@ function discoverMcp(paths) {
                 schemaBytes: 0,
             });
         }
-    }
+    };
+
+    for (const cfgPath of paths.mcpConfigs) addFromFile(cfgPath, 'antigravity');
+    for (const ext of (paths.externalMcpConfigs || [])) addFromFile(ext.path, ext.client);
 
     const disabledParsed = tryParseJson(paths.disabledPath);
     if (disabledParsed.data && typeof disabledParsed.data === 'object') {
         for (const [id, entry] of Object.entries(disabledParsed.data)) {
-            if (servers.has(id)) continue;
+            const key = `antigravity:${id}`;
+            if (servers.has(key)) continue;
             const def = (entry && entry.def) || {};
-            servers.set(id, {
+            servers.set(key, {
                 id,
+                client: 'antigravity',
                 transport: def.command ? 'stdio' : (def.serverUrl || def.url) ? 'http' : 'unknown',
                 def,
                 source: entry?.source || paths.disabledPath,
@@ -170,8 +185,10 @@ function discoverMcp(paths) {
                     tools.push(f.slice(0, -5));
                 } catch {}
             }
-            const existing = servers.get(ent.name) || {
+            const key = `antigravity:${ent.name}`;
+            const existing = servers.get(key) || {
                 id: ent.name,
+                client: 'antigravity',
                 transport: 'plugin',
                 def: {},
                 source: dir,
@@ -184,7 +201,7 @@ function discoverMcp(paths) {
                 existing.tools = tools;
                 existing.schemaBytes = totalBytes;
             }
-            servers.set(ent.name, existing);
+            servers.set(key, existing);
         }
     }
 

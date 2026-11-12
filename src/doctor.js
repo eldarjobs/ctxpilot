@@ -89,25 +89,26 @@ async function runDoctor(opts = {}) {
 
     // 2. Each discovered MCP server
     for (const srv of mcp.servers) {
+        const srvLabel = srv.client && srv.client !== 'antigravity' ? `${srv.id} (${srv.client})` : srv.id;
         if (srv.parked) {
-            add('mcp-server', srv.id, 'OK', 'Parked (disabled in mcp_disabled.json)');
+            add('mcp-server', srvLabel, 'OK', 'Parked (disabled in mcp_disabled.json)');
             continue;
         }
         if (srv.transport === 'stdio') {
             const cmd = srv.def.command;
             const resolved = resolveCommandOnPath(cmd);
             if (!cmd) {
-                add('mcp-server', srv.id, 'FAIL', 'stdio server missing "command"');
+                add('mcp-server', srvLabel, 'FAIL', 'stdio server missing "command"');
             } else if (!resolved) {
                 const isExplicitPath = path.isAbsolute(cmd) || cmd.includes('/') || cmd.includes('\\');
-                add('mcp-server', srv.id, isExplicitPath ? 'FAIL' : 'WARN', `command not found: ${path.basename(cmd)}`);
+                add('mcp-server', srvLabel, isExplicitPath ? 'FAIL' : 'WARN', `command not found: ${path.basename(cmd)}`);
             } else {
                 // If node/python runs a script arg, check if first existing-looking arg exists
                 const firstArg = Array.isArray(srv.def.args) && srv.def.args[0];
                 if (firstArg && (path.isAbsolute(firstArg) || /\.(js|mjs|cjs|py)$/i.test(firstArg)) && !fs.existsSync(firstArg)) {
-                    add('mcp-server', srv.id, 'FAIL', `entrypoint missing: ${path.basename(firstArg)}`);
+                    add('mcp-server', srvLabel, 'FAIL', `entrypoint missing: ${path.basename(firstArg)}`);
                 } else {
-                    add('mcp-server', srv.id, 'OK', `stdio (${path.basename(cmd)})`);
+                    add('mcp-server', srvLabel, 'OK', `stdio (${path.basename(cmd)})`);
                 }
             }
         } else if (srv.transport === 'http') {
@@ -115,33 +116,33 @@ async function runDoctor(opts = {}) {
             let parsedUrl = null;
             try { parsedUrl = new URL(rawUrl); } catch { }
             if (!parsedUrl) {
-                add('mcp-server', srv.id, 'FAIL', 'Invalid HTTP server URL');
+                add('mcp-server', srvLabel, 'FAIL', 'Invalid HTTP server URL');
             } else if (parsedUrl.protocol === 'http:' && !['localhost', '127.0.0.1', '::1'].includes(parsedUrl.hostname)) {
-                add('mcp-server', srv.id, 'WARN', `Non-TLS HTTP endpoint (${parsedUrl.hostname})`);
+                add('mcp-server', srvLabel, 'WARN', `Non-TLS HTTP endpoint (${parsedUrl.hostname})`);
             } else if (opts.ping) {
                 const probe = await pingUrl(rawUrl);
-                add('mcp-server', srv.id, probe.ok ? 'OK' : 'WARN', probe.ok ? `http reachable (HTTP ${probe.status})` : `http unreachable (${probe.error || probe.status})`);
+                add('mcp-server', srvLabel, probe.ok ? 'OK' : 'WARN', probe.ok ? `http reachable (HTTP ${probe.status})` : `http unreachable (${probe.error || probe.status})`);
             } else {
-                add('mcp-server', srv.id, 'OK', `http (${parsedUrl.host})`);
+                add('mcp-server', srvLabel, 'OK', `http (${parsedUrl.host})`);
             }
         } else {
-            add('mcp-server', srv.id, 'OK', `${srv.transport} (${srv.tools.length} tool schema(s))`);
+            add('mcp-server', srvLabel, 'OK', `${srv.transport} (${srv.tools.length} tool schema(s))`);
         }
 
         // Database safety check (READONLY=true is OK, false/missing is WARN)
         const dbCheck = checkDatabaseSafety(srv);
-        if (dbCheck) add('mcp-db', srv.id, dbCheck.level, dbCheck.detail);
+        if (dbCheck) add('mcp-db', srvLabel, dbCheck.level, dbCheck.detail);
 
         // Plaintext secret scan (prefix-free redaction)
         const secrets = scanServerSecrets(srv.id, srv.def);
         for (const sec of secrets) {
-            add('mcp-secret', srv.id, 'FAIL', `Plaintext ${sec.redacted} in ${sec.location}.${sec.key}`, {
+            add('mcp-secret', srvLabel, 'FAIL', `Plaintext ${sec.redacted} in ${sec.location}.${sec.key}`, {
                 location: sec.location,
                 key: sec.key,
                 secretType: sec.secretType,
             });
             suggestions.push({
-                serverId: srv.id,
+                serverId: srvLabel,
                 location: sec.location,
                 envVar: sec.suggestion.envVar,
                 snippet: sec.suggestion.snippet,

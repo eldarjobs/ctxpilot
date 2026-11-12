@@ -118,6 +118,7 @@ function recommendProfile(workspaceDir, servers, hubCfg, profiles) {
         stack: detected.stack,
         profile: targetProfile,
         source: hubCfg && hubCfg.profile ? 'hub.json' : 'auto-detect',
+        autoApply: Boolean(hubCfg && hubCfg.autoProfile),
         changesCount,
         savingsTok,
     };
@@ -140,6 +141,7 @@ function buildHubConfig(workspaceDir) {
     }
     return {
         profile: tpl.profile,
+        autoProfile: false,
         actions,
         prompts: tpl.prompts,
     };

@@ -95,9 +95,28 @@ function scanServerSecrets(serverId, def) {
     return findings;
 }
 
+function scanTextSecrets(text) {
+    const hits = [];
+    const lines = String(text || '').split(/\r?\n/);
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line || line.includes('${')) continue;
+        for (const p of TOKEN_PATTERNS) {
+            if (p.type === 'bearer-token' && !/Authorization|Bearer\s+[A-Za-z0-9._-]{16,}/i.test(line)) continue;
+            if (p.re.test(line)) {
+                hits.push({ line: i + 1, secretType: p.type, redacted: redactLabel(p.type) });
+                break;
+            }
+        }
+    }
+    return hits;
+}
+
 module.exports = {
     isEnvReference,
     classifySecret,
     redactLabel,
     scanServerSecrets,
+    scanTextSecrets,
+    suggestReplacement,
 };

@@ -15,6 +15,9 @@ function parseTranscriptV1(rawText, convId) {
     const lines = rawText.split(/\r?\n/).filter(Boolean);
     let lastPlanner = null;
     let steps = 0;
+    let sessionInputTokens = 0;
+    let sessionCacheReadTokens = 0;
+    let sessionOutputTokens = 0;
 
     for (const line of lines) {
         let obj;
@@ -24,7 +27,10 @@ function parseTranscriptV1(rawText, convId) {
             steps++;
             if (typeof obj.input_tokens === 'number' || typeof obj.cache_read_tokens === 'number') {
                 lastPlanner = obj;
+                sessionInputTokens += Number(obj.input_tokens) || 0;
+                sessionCacheReadTokens += Number(obj.cache_read_tokens) || 0;
             }
+            sessionOutputTokens += Number(obj.output_tokens) || 0;
         }
     }
 
@@ -37,6 +43,9 @@ function parseTranscriptV1(rawText, convId) {
     const outputTokens = Number(lastPlanner.output_tokens) || 0;
     const totalContextTokens = inputTokens + cacheReadTokens;
     const cacheHitPct = totalContextTokens > 0 ? Math.round((cacheReadTokens / totalContextTokens) * 1000) / 10 : 0;
+    const cacheHealth = steps >= 3 && cacheHitPct < 25
+        ? { status: 'WARN', message: `Low cache hit (${cacheHitPct}%) — rule/MCP edits may have busted prompt cache` }
+        : { status: 'OK', message: null };
 
     return {
         adapterVersion: 'v1',
@@ -48,6 +57,10 @@ function parseTranscriptV1(rawText, convId) {
         totalContextTokens,
         cacheHitPct,
         stepsInTail: steps,
+        sessionInputTokens,
+        sessionCacheReadTokens,
+        sessionOutputTokens,
+        cacheHealth,
     };
 }
 

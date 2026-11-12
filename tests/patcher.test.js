@@ -62,7 +62,7 @@ describe('Overview Hub ASAR patcher', () => {
             assert.equal(res.checked, 2); // package.json + assets/keep.txt
 
             // Verify all modules required by main-inject.js resolve cleanly from isolated coreCacheDir
-            for (const mod of ['context.js', 'doctor.js', 'discovery.js', 'mcp-control.js', 'stack.js', 'handoff.js']) {
+            for (const mod of ['context.js', 'doctor.js', 'discovery.js', 'mcp-control.js', 'stack.js', 'handoff.js', 'checkpoint.js', 'verify.js', 'sync.js', 'gate.js']) {
                 const loaded = require(path.join(coreCacheDir, mod));
                 assert.ok(loaded, `${mod} should load from coreCacheDir`);
             }

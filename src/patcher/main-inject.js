@@ -9,11 +9,16 @@
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
     const { parkServer: cpPark, unparkServer: cpUnpark, setReadonly: cpSetRo, applyProfile: cpApplyProfile, listProfiles: cpListProfiles } = require(path.join(cpCoreDir, 'mcp-control.js'));
     const { recommendProfile: cpRecommendProfile } = require(path.join(cpCoreDir, 'stack.js'));
-    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, buildSubChatResult: cpBuildSubChatResult, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
+    const { buildHandoff: cpBuildHandoff, buildSubChat: cpBuildSubChat, buildTurnTimeline: cpBuildTurnTimeline, buildSubChatFromTurn: cpBuildSubChatFromTurn, listFixes: cpListFixes, addFix: cpAddFix, removeFix: cpRemoveFix, getChatSignals: cpGetChatSignals, buildSubChatResult: cpBuildSubChatResult, getQuickDiffContext: cpGetQuickDiff } = require(path.join(cpCoreDir, 'handoff.js'));
+    const { createCheckpoint: cpCreateCheckpoint, maybeAutoCheckpoint: cpMaybeAutoCheckpoint, listCheckpoints: cpListCheckpoints, rewindCheckpoint: cpRewindCheckpoint, dropCheckpoint: cpDropCheckpoint, createWorktreeSubChat: cpCreateWorktreeSubChat, listWorktrees: cpListWorktrees, removeWorktree: cpRemoveWorktree } = require(path.join(cpCoreDir, 'checkpoint.js'));
+    const { detectVerifyCommand: cpDetectVerify, runVerify: cpRunVerify } = require(path.join(cpCoreDir, 'verify.js'));
+    const { syncAgents: cpSyncAgents } = require(path.join(cpCoreDir, 'sync.js'));
+    const { runPrePushGate: cpRunGate } = require(path.join(cpCoreDir, 'gate.js'));
 
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
     const cpTokenCache = new Map();
+    const cpAutoAppliedWorkspaces = new Set();
 
     function cpReadJson(p) { try { return JSON.parse(fsSync.readFileSync(p, 'utf8')); } catch { return null; } }
 
@@ -165,22 +170,32 @@
         const skills = cpDiscoverSkills(paths);
         const profiles = cpListProfiles(opts);
         const hubCfg = cpReadJson(path.join(paths.workspaceDir, '.agents', 'hub.json'));
-        const servers = mcp.servers.map(s => {
-            const env = (s.def && s.def.env) || {};
-            const roKey = ['READONLY', 'DB_READONLY'].find(k => Object.prototype.hasOwnProperty.call(env, k));
-            const schemaInfo = ctx.mcp.servers.find(m => m.id === s.id);
-            return {
-                id: s.id,
-                transport: s.transport,
-                parked: s.parked,
-                configurable: paths.mcpConfigs.includes(s.source) || s.parked,
-                toolCount: s.tools.length,
-                tools: s.tools,
-                tokensEst: schemaInfo ? schemaInfo.tokensEst : 0,
-                readonly: roKey ? String(env[roKey]).toLowerCase() === 'true' : null,
-            };
-        });
-        const profileHint = cpRecommendProfile(paths.workspaceDir, servers, hubCfg, profiles);
+        const servers = mcp.servers
+            .filter(s => !s.client || s.client === 'antigravity')
+            .map(s => {
+                const env = (s.def && s.def.env) || {};
+                const roKey = ['READONLY', 'DB_READONLY'].find(k => Object.prototype.hasOwnProperty.call(env, k));
+                const schemaInfo = ctx.mcp.servers.find(m => m.id === s.id);
+                return {
+                    id: s.id,
+                    transport: s.transport,
+                    parked: s.parked,
+                    configurable: paths.mcpConfigs.includes(s.source) || s.parked,
+                    toolCount: s.tools.length,
+                    tools: s.tools,
+                    tokensEst: schemaInfo ? schemaInfo.tokensEst : 0,
+                    readonly: roKey ? String(env[roKey]).toLowerCase() === 'true' : null,
+                };
+            });
+        let profileHint = cpRecommendProfile(paths.workspaceDir, servers, hubCfg, profiles);
+        if (profileHint.autoApply && profileHint.changesCount > 0 && !cpAutoAppliedWorkspaces.has(paths.workspaceDir)) {
+            cpAutoAppliedWorkspaces.add(paths.workspaceDir);
+            try {
+                const applied = cpApplyProfile(profileHint.profile, opts);
+                if (applied.changes.length > 0) cpRestartPending = true;
+                profileHint = { ...profileHint, changesCount: 0, autoApplied: true };
+            } catch {}
+        }
         const t = ctx.transcript;
         const limit = t && t.available ? (t.totalContextTokens > 200000 ? 1000000 : 200000) : 200000;
         const ctxPct = t && t.available ? Math.round(t.totalContextTokens / limit * 100) : 0;
@@ -188,6 +203,9 @@
         const bloatAlert = (ctxPct >= 75 || ctx.staticOverheadTokensEst >= 15000) && heavyActive.length > 0
             ? { ctxPct, staticTok: ctx.staticOverheadTokensEst, topServers: heavyActive.slice(0, 2).map(s => s.id), savingsTok: heavyActive.slice(0, 2).reduce((n, s) => n + s.tokensEst, 0) }
             : null;
+        const tl = cpBuildTurnTimeline(opts);
+        const latestTurn = tl.turns.length ? tl.turns[tl.turns.length - 1] : null;
+        if (latestTurn) cpMaybeAutoCheckpoint(latestTurn.turn, tl.convId, opts);
         return {
             workspace: paths.workspaceDir,
             workspacePinned: fsSync.existsSync(path.join(paths.cfgDir, 'hub_workspace.json')),
@@ -207,6 +225,10 @@
             customPrompts,
             fixes: cpListFixes(opts).slice(0, 15),
             chatSignals: cpGetChatSignals(opts),
+            timeline: tl.turns,
+            checkpoints: cpListCheckpoints(opts).slice(0, 12),
+            worktrees: cpListWorktrees(opts),
+            verifyCmd: cpDetectVerify(paths.workspaceDir),
         };
     }
 
@@ -359,6 +381,42 @@
             return fixes.length ? 'Saved workspace fixes:\n' + fixes.map(f => `- ${f.title}${f.detail ? `: ${f.detail}` : ''}`).join('\n') : '';
         }
         return '';
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:checkpoint-create', async (_e, label) => {
+        cpCreateCheckpoint(label || 'manual', cpActiveOpts());
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:checkpoint-rewind', async (_e, id) => {
+        cpRewindCheckpoint(id || null, cpActiveOpts());
+        cpMetaCache.ts = 0;
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:checkpoint-rm', async (_e, id) => {
+        if (id) cpDropCheckpoint(id, cpActiveOpts());
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:worktree-subchat', async (_e, p) => {
+        const res = cpCreateWorktreeSubChat(p && p.topic, cpActiveOpts({ conv: p && p.conv }));
+        try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        return res;
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:worktree-rm', async (_e, wtPath) => {
+        if (wtPath) cpRemoveWorktree(wtPath, cpActiveOpts());
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:verify', async () => cpRunVerify(cpActiveOpts()));
+    electron_1.ipcMain.handle('ctxpilot:gate', async (_e, p) => cpRunGate(cpActiveOpts({ strict: Boolean(p && p.strict) })));
+    electron_1.ipcMain.handle('ctxpilot:sync-agents', async (_e, p) => cpSyncAgents(cpActiveOpts({ mcp: Boolean(p && p.mcp) })));
+    electron_1.ipcMain.handle('ctxpilot:fork-turn', async (_e, turn) => {
+        const res = cpBuildSubChatFromTurn(turn, cpActiveOpts());
+        try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        return res;
     });
     } catch (cpErr) {
         try { console.error('[ctxpilot] Overview Hub init failed:', cpErr); } catch {}

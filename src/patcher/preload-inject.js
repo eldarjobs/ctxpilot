@@ -11,7 +11,9 @@ function installCtxPilotOverviewHub() {
     let fixInput = '';
     let statusMsg = '';
     let statusTimer = null;
-    let open = { mcp: true, doctor: false, cli: true, prompts: false, fixes: false, rules: false, hooks: false, skills: false, tokens: false };
+    let verifyState = null;
+    let gateMsg = '';
+    let open = { mcp: true, doctor: false, cli: true, prompts: false, checkpoints: false, timeline: false, fixes: false, rules: false, hooks: false, skills: false, tokens: false };
     try { Object.assign(open, JSON.parse(localStorage.getItem('ctxPilotOpen') || '{}')); } catch {}
 
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -62,7 +64,140 @@ function installCtxPilotOverviewHub() {
         return null;
     }
 
-    function openNewChatWithPrompt(text, label) {
+    function loadSubLinks() {
+        try { return JSON.parse(localStorage.getItem('ctxPilotSubChatLinks') || '[]'); } catch { return []; }
+    }
+    function saveSubLinks(list) {
+        try { localStorage.setItem('ctxPilotSubChatLinks', JSON.stringify(list.slice(0, 15))); } catch {}
+    }
+
+    function findSidebarConvRows() {
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const bar = document.getElementById('ctxpilot-inline-actions');
+        const tree = document.getElementById('ctxpilot-sidebar-tree');
+        const rows = [];
+        const skipRe = /^(new chat|inbox|start conversation|settings|extensions|review|files|terminal|workspaces|open)$/i;
+        const wsName = (state && state.meta && state.meta.name || '').toLowerCase();
+        for (const el of document.querySelectorAll('div, button, a, [role="button"], [role="listitem"]')) {
+            if ((hub && hub.contains(el)) || (bar && bar.contains(el)) || (tree && tree.contains(el))) continue;
+            const r = el.getBoundingClientRect();
+            if (r.left < 0 || r.left > 280 || r.width < 110 || r.width > 340 || r.height < 22 || r.height > 46) continue;
+            const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
+            if (!txt || txt.length > 90 || skipRe.test(txt) || txt.toLowerCase() === wsName) continue;
+            // Prefer leaf-ish interactive rows (avoid outer wrapper containers that hold multiple rows)
+            if (el.querySelector('[role="listitem"], [role="button"]') && el.children.length > 3) continue;
+            rows.push({ el, rect: r, text: txt });
+        }
+        return rows;
+    }
+
+    function findActiveSidebarRow(rows) {
+        for (const row of rows) {
+            const cs = getComputedStyle(row.el);
+            const hasBg = cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
+            const hasBorder = cs.borderTopWidth && cs.borderTopWidth !== '0px' && cs.borderTopStyle !== 'none';
+            if (hasBg || hasBorder) return row;
+        }
+        return rows[0] || null;
+    }
+
+    function recordSubChatLink(topic, res) {
+        const rows = findSidebarConvRows();
+        const active = findActiveSidebarRow(rows);
+        const parentTitle = active ? active.text.slice(0, 48) : '';
+        if (!parentTitle) return;
+        const list = loadSubLinks();
+        list.unshift({
+            id: Date.now().toString(36),
+            parentTitle,
+            parentConvId: (res && res.convId ? String(res.convId) : '').slice(0, 8),
+            topic: String(topic || 'Side task').trim().slice(0, 40) || 'Side task',
+            childTitle: '',
+            createdAt: Date.now(),
+        });
+        saveSubLinks(list);
+    }
+
+    function renderSidebarSubChats() {
+        document.querySelectorAll('[data-cp-sub-pad]').forEach(el => {
+            el.style.marginBottom = '';
+            delete el.dataset.cpSubPad;
+        });
+        let tree = document.getElementById('ctxpilot-sidebar-tree');
+        const links = loadSubLinks();
+        if (!links.length || !document.body) { if (tree) tree.remove(); return; }
+
+        const rows = findSidebarConvRows();
+        const active = findActiveSidebarRow(rows);
+        const sig = state && state.chatSignals;
+        if (sig && sig.isSubChat && active) {
+            let changed = false;
+            for (const l of links) {
+                if (!l.childTitle && active.text !== l.parentTitle && (!sig.parentConvId || l.parentConvId === sig.parentConvId)) {
+                    l.childTitle = active.text.slice(0, 48);
+                    changed = true;
+                    break;
+                }
+            }
+            if (changed) saveSubLinks(links);
+        }
+
+        const groups = [];
+        for (const link of links) {
+            const needle = link.parentTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
+            const match = needle ? rows.find(r => r.text.toLowerCase().includes(needle) && r.rect.top >= 36 && r.rect.bottom <= window.innerHeight - 16) : null;
+            if (!match) continue;
+            let grp = groups.find(g => g.row === match);
+            if (!grp) { grp = { row: match, kids: [] }; groups.push(grp); }
+            if (grp.kids.length < 3) grp.kids.push(link);
+        }
+
+        if (!groups.length) { if (tree) tree.remove(); return; }
+        if (!tree) {
+            tree = document.createElement('div');
+            tree.id = 'ctxpilot-sidebar-tree';
+            tree.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
+            document.body.appendChild(tree);
+        }
+
+        const html = [];
+        for (const g of groups) {
+            g.row.el.style.marginBottom = `${g.kids.length * 24 + 4}px`;
+            g.row.el.dataset.cpSubPad = '1';
+            g.kids.forEach((kid, idx) => {
+                const top = Math.round(g.row.rect.bottom + 2 + idx * 24);
+                const left = Math.round(g.row.rect.left + 14);
+                const w = Math.max(100, Math.round(g.row.rect.width - 14));
+                html.push(`<div class="cp-sb-kid" data-id="${esc(kid.id)}" style="pointer-events:auto;position:fixed;top:${top}px;left:${left}px;width:${w}px;height:22px;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 6px;border-left:2px solid rgba(96,165,250,.55);background:rgba(24,24,27,.85);border-radius:0 5px 5px 0;font-size:11px;color:#93c5fd;cursor:pointer;" title="Switch to sub-chat: ${esc(kid.topic)}">
+                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">&#8627; ${esc(kid.topic)}</span>
+                    <button class="cp-sb-rm" data-id="${esc(kid.id)}" style="background:transparent;border:none;color:#71717a;font-size:10px;cursor:pointer;padding:0 2px;">x</button>
+                </div>`);
+            });
+        }
+        tree.innerHTML = html.join('');
+        tree.querySelectorAll('.cp-sb-kid').forEach(el => {
+            el.onclick = (e) => {
+                if (e.target && e.target.classList.contains('cp-sb-rm')) return;
+                const kid = loadSubLinks().find(x => x.id === el.dataset.id);
+                if (!kid) return;
+                const liveRows = findSidebarConvRows();
+                const targetNeedle = (kid.childTitle || kid.topic).replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
+                const targetRow = liveRows.find(r => r.text.toLowerCase().includes(targetNeedle));
+                if (targetRow) targetRow.el.click();
+                else flashStatus(`Sub-chat "${kid.topic}" not found in sidebar yet`);
+            };
+        });
+        tree.querySelectorAll('.cp-sb-rm').forEach(btn => {
+            btn.onclick = (e) => {
+                e.stopPropagation();
+                saveSubLinks(loadSubLinks().filter(x => x.id !== btn.dataset.id));
+                renderSidebarSubChats();
+            };
+        });
+    }
+
+    function openNewChatWithPrompt(text, label, subTopicMeta) {
+        if (subTopicMeta !== undefined) recordSubChatLink(subTopicMeta.topic, subTopicMeta.res);
         try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text); } catch {}
         const newBtn = findNewChatButton();
         if (newBtn) {
@@ -129,7 +264,8 @@ function installCtxPilotOverviewHub() {
             state.restartPending, state.doctor?.summary, state.context?.staticOverheadTokensEst,
             state.context?.transcript?.totalContextTokens, state.rules?.map(r => [r.name, r.enabled]),
             state.hooks?.map(h => [h.name, h.enabled]), state.skills?.length, state.actions,
-            state.fixes?.map(f => f.id), showSubChat, statusMsg, state.workspace, state.workspacePinned,
+            state.fixes?.map(f => f.id), (state.checkpoints || []).map(c => c.id), (state.worktrees || []).map(w => w.branch), (state.timeline || []).length,
+            showSubChat, statusMsg, verifyState, gateMsg, state.workspace, state.workspacePinned, state.verifyCmd,
             state.meta, state.profileHint, state.bloatAlert, expandedSrv, open, history.map(h => [h.id, h.peak]),
         ]);
     }
@@ -221,6 +357,40 @@ function installCtxPilotOverviewHub() {
                 <span style="font-size:11px;font-family:monospace;color:${h.enabled ? '#e4e4e7' : '#71717a'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(h.name)} <span style="${S.muted}">(${esc(h.events.join(','))})</span></span>
                 ${toggle('cp-hook', h.name, h.enabled)}
             </div>`).join('') || `<span style="${S.muted}">No .agents/hooks.json</span>`}</div>`;
+    }
+
+    function checkpointsBody() {
+        const cps = (state.checkpoints || []).map(c => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 0;">
+                <span title="${esc(c.createdAt)} (${c.dirtyCount} dirty)" style="font-size:11px;color:#e4e4e7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">${esc(c.label)} <span style="${S.muted}">(${esc(c.branch)})</span></span>
+                <div style="display:flex;gap:4px;flex:none;">
+                    <button class="cp-cp-rewind" data-id="${esc(c.id)}" style="${S.ghost}" title="Rewind working tree to this checkpoint">Rewind</button>
+                    <button class="cp-cp-rm" data-id="${esc(c.id)}" style="background:transparent;border:none;color:#71717a;font-size:11px;cursor:pointer;padding:0 3px;">x</button>
+                </div>
+            </div>`).join('');
+        const wts = (state.worktrees || []).map(w => `
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 0;">
+                <span title="${esc(w.path)}" style="font-size:10px;font-family:monospace;color:#93c5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">wt: ${esc(w.branch)}</span>
+                <button class="cp-wt-rm" data-path="${esc(w.path)}" style="background:transparent;border:none;color:#71717a;font-size:11px;cursor:pointer;padding:0 3px;" title="Remove worktree & branch">x</button>
+            </div>`).join('');
+        return `<div style="display:flex;flex-direction:column;gap:2px;max-height:120px;overflow-y:auto;">${cps || `<span style="${S.muted}">No snapshots yet. Click + Snapshot before risky edits.</span>`}${wts}</div>`;
+    }
+
+    function timelineBody() {
+        const turns = state.timeline || [];
+        if (!turns.length) return `<span style="${S.muted}">No turns parsed yet.</span>`;
+        const cps = state.checkpoints || [];
+        return `<div style="display:flex;flex-direction:column;gap:3px;max-height:140px;overflow-y:auto;">${turns.slice().reverse().map(t => {
+            const cp = cps.find(c => c.auto && c.turn === t.turn);
+            const filesNote = t.filesEdited.length ? `${t.filesEdited.length} file(s)` : 'chat';
+            return `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;padding:2px 0;">
+                <span title="${esc(t.prompt + (t.filesEdited.length ? '\nFiles: ' + t.filesEdited.join(', ') : ''))}" style="font-size:10px;color:#d4d4d8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;"><b>T${t.turn}</b> · ${t.tokens ? k(t.tokens) : '-'} · ${filesNote}: ${esc(t.prompt)}</span>
+                <div style="display:flex;gap:3px;flex:none;">
+                    ${cp ? `<button class="cp-cp-rewind" data-id="${esc(cp.id)}" style="${S.ghost}" title="Rewind to Turn ${t.turn}">Rw</button>` : ''}
+                    <button class="cp-turn-fork" data-turn="${t.turn}" style="${S.ghost}" title="Fork Sub-Chat from Turn ${t.turn}">Fork</button>
+                </div>
+            </div>`;
+        }).join('')}</div>`;
     }
 
     function fixesBody() {
@@ -315,17 +485,25 @@ function installCtxPilotOverviewHub() {
         const docIssue = (d.findings || []).find(f => f.level === 'FAIL' || f.level === 'WARN');
         const subTopic = sig.issueTopic || (docIssue ? `${docIssue.category}: ${docIssue.message}` : '');
 
-        const key = JSON.stringify([anchor.inReviewRow, m.dirtyCount, m.mapFile, ctxPct, sig.asksProceed, sig.isSubChat, sig.subChatOffer, subTopic, docIssue?.message, statusMsg]);
+        const key = JSON.stringify([anchor.inReviewRow, m.dirtyCount, m.mapFile, ctxPct, sig.asksProceed, sig.isSubChat, sig.subChatOffer, subTopic, docIssue?.message, state.verifyCmd, verifyState, gateMsg, (state.checkpoints || []).length, statusMsg]);
         if (bar.dataset.key === key) return;
         bar.dataset.key = key;
 
         const pill = (id, label, style, title) => `<button id="${id}" title="${esc(title)}" style="${style}font-size:10px;padding:2px 7px;white-space:nowrap;">${esc(label)}</button>`;
         const warnBtn = 'background:rgba(245,158,11,.16);border:1px solid rgba(245,158,11,.45);color:#fbbf24;border-radius:4px;font-weight:600;cursor:pointer;';
         const okBtn = 'background:rgba(16,185,129,.16);border:1px solid rgba(16,185,129,.45);color:#34d399;border-radius:4px;font-weight:600;cursor:pointer;';
+        const failBtn = 'background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.45);color:#fca5a5;border-radius:4px;font-weight:600;cursor:pointer;';
 
         const actions = [];
         if (sig.isSubChat) actions.push(pill('cp-bar-subresult', `Copy Result -> ${sig.parentConvId || 'Parent'}`, okBtn, 'Copy sub-chat summary to paste back into the parent chat'));
         if (sig.asksProceed) actions.push(pill('cp-bar-proceed', 'Proceed', S.btn, 'Send "Proceed with the next step."'));
+        if (state.verifyCmd && (m.dirtyCount > 0 || verifyState)) {
+            if (verifyState && verifyState.running) actions.push(pill('cp-bar-verify', 'Verifying...', S.ghost, `Running ${state.verifyCmd}`));
+            else if (verifyState && verifyState.result && verifyState.result.ok) actions.push(pill('cp-bar-verify', `Verify OK (${Math.round(verifyState.result.durationMs / 100) / 10}s)`, okBtn, verifyState.result.summaryLine));
+            else if (verifyState && verifyState.result && !verifyState.result.ok) actions.push(pill('cp-bar-verify-fix', 'Verify FAIL (Send)', failBtn, verifyState.result.summaryLine));
+            else actions.push(pill('cp-bar-verify', 'Verify', S.ghost, `Run ${state.verifyCmd} silently`));
+        }
+        if (m.dirtyCount > 0 && (state.checkpoints || []).length > 0) actions.push(pill('cp-bar-rewind', 'Rewind', warnBtn, `Rollback files to checkpoint: ${state.checkpoints[0].label}`));
         if (m.dirtyCount > 0) actions.push(pill('cp-bar-commit', `Commit & Push (${m.dirtyCount})`, okBtn, 'Ask agent to review diff, commit, and push'));
         if (sig.subChatOffer) actions.push(pill('cp-bar-subchat', 'Open Sub-Chat', S.btn, `Branch offered side-task into an isolated Sub-Chat: ${sig.subChatOffer}`));
         else if (subTopic || d.summary?.warn || d.summary?.fail) actions.push(pill('cp-bar-subchat', 'Sub-Chat: Investigate', warnBtn, `Isolate issue in a Sub-Chat: ${subTopic || 'doctor warning'}`));
@@ -334,10 +512,29 @@ function installCtxPilotOverviewHub() {
         if (!anchor.inReviewRow && m.mapFile) actions.push(pill('cp-inj-map', `+${m.mapFile}`, S.ghost, `Insert ${m.mapFile} context into chat`));
         if (!anchor.inReviewRow && m.dirtyCount > 0) actions.push(pill('cp-inj-diff', '+git diff', S.ghost, 'Insert git status & diff stat into chat'));
 
-        const msgChip = statusMsg ? `<span style="font-size:10px;color:#34d399;padding:0 4px;">${esc(statusMsg)}</span>` : '';
+        const msgChip = (gateMsg || statusMsg) ? `<span style="font-size:10px;color:${gateMsg ? '#fca5a5' : '#34d399'};padding:0 4px;">${esc(gateMsg || statusMsg)}</span>` : '';
         bar.innerHTML = `${actions.join('')}${msgChip}`;
 
         const bind = (id, fn) => { const el = bar.querySelector(id); if (el) el.onclick = (e) => { e.stopPropagation(); fn(); }; };
+        bind('#cp-bar-verify', async () => {
+            verifyState = { running: true, result: null };
+            renderActionBar();
+            const res = await invoke('ctxpilot:verify', {});
+            verifyState = { running: false, result: res };
+            renderActionBar();
+        });
+        bind('#cp-bar-verify-fix', () => {
+            const r = verifyState && verifyState.result;
+            if (!r) return;
+            verifyState = null;
+            sendPrompt(`\`${r.command}\` failed (exit ${r.exitCode}). Fix this failure:\n\`\`\`\n${r.outputTail}\n\`\`\``);
+        });
+        bind('#cp-bar-rewind', async () => {
+            const cp = state.checkpoints && state.checkpoints[0];
+            if (!cp || !window.confirm(`Rewind working tree to checkpoint "${cp.label}"?`)) return;
+            state = await invoke('ctxpilot:checkpoint-rewind', cp.id) || state;
+            flashStatus(`Rewound to ${cp.label}`);
+        });
         bind('#cp-bar-subresult', async () => {
             const res = await invoke('ctxpilot:subchat-result', {});
             if (res && res.summary) {
@@ -346,10 +543,27 @@ function installCtxPilotOverviewHub() {
             }
         });
         bind('#cp-bar-proceed', () => sendPrompt('Proceed with the next step.'));
-        bind('#cp-bar-commit', () => sendPrompt('Review git status and diff, commit the relevant changes cleanly, and push to origin.'));
+        bind('#cp-bar-commit', async () => {
+            gateMsg = 'Running Pre-Push Gate...';
+            renderActionBar();
+            const g = await invoke('ctxpilot:gate', {});
+            if (g && !g.ok) {
+                const top = g.blockers && g.blockers[0] ? g.blockers[0].message : 'Pre-Push Gate failed';
+                gateMsg = `Gate blocked: ${top.slice(0, 60)}`;
+                renderActionBar();
+                setTimeout(() => { gateMsg = ''; renderActionBar(); }, 6000);
+                return;
+            }
+            gateMsg = '';
+            renderActionBar();
+            const scope = g && g.chatFiles && g.chatFiles.length && g.otherFiles && g.otherFiles.length
+                ? ` Stage ONLY this chat's files (${g.chatFiles.join(', ')}) and leave local files (${g.otherFiles.join(', ')}) untouched.`
+                : '';
+            sendPrompt(`Pre-Push Gate passed (secrets/doctor/verify clean). Review git status and diff, commit cleanly, and push to origin.${scope}`);
+        });
         bind('#cp-bar-subchat', async () => {
             const res = await invoke('ctxpilot:subchat', { topic: subTopic });
-            if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`);
+            if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`, { topic: subTopic || 'Investigate', res });
         });
         bind('#cp-bar-handoff', async () => {
             const res = await invoke('ctxpilot:handoff', {});
@@ -368,6 +582,7 @@ function installCtxPilotOverviewHub() {
         rendering = true;
         try {
             renderActionBar();
+            renderSidebarSubChats();
             const target = findOverviewMenu();
             if (!target) return;
             const { container, anchorRow } = target;
@@ -412,6 +627,7 @@ function installCtxPilotOverviewHub() {
                 ${showSubChat ? `<div style="display:flex;gap:4px;">
                     <input id="cp-subchat-topic" placeholder="Side-task or fix to isolate (optional)..." value="${esc(subChatTopic)}" style="flex:1;min-width:0;background:#0c0c0e;border:1px solid rgba(59,130,246,.35);border-radius:4px;color:#e4e4e7;font-size:11px;padding:3px 6px;outline:none;">
                     <button id="cp-subchat-go" style="${S.btn}">Go</button>
+                    <button id="cp-subchat-wt" style="${S.ghost}" title="Create isolated git worktree + Sub-Chat">WT</button>
                 </div>` : ''}
                 <div style="display:flex;justify-content:space-between;align-items:center;gap:4px;font-size:10px;color:#a1a1aa;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);border-radius:5px;padding:3px 6px;">
                     <span id="cp-pick-ws" title="${esc(state.workspace)} - click to switch" style="font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;">${esc(wsTitle)}</span>
@@ -429,6 +645,8 @@ function installCtxPilotOverviewHub() {
                     </div>
                     ${t && t.available ? `<div style="height:4px;background:#27272a;border-radius:2px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${uc};"></div></div>` : ''}
                     <div style="font-size:10px;color:#a1a1aa;">Static ~${k(c.staticOverheadTokensEst)} tok (Rules ~${k(c.rules.alwaysOnTokensEst)} · MCP ~${k(c.mcp.totalTokensEst)} · Skills ~${k(c.skills.tokensEst)})</div>
+                    ${t && t.available && t.sessionInputTokens != null ? `<div style="font-size:10px;color:#71717a;">Session burn: ${k(t.sessionInputTokens)} in · ${k(t.sessionOutputTokens)} out (${t.stepsInTail} steps)</div>` : ''}
+                    ${t && t.cacheHealth && t.cacheHealth.status === 'WARN' ? `<div style="font-size:10px;color:#fbbf24;background:rgba(245,158,11,.08);border:1px solid rgba(245,158,11,.25);border-radius:4px;padding:3px 6px;">${esc(t.cacheHealth.message)}</div>` : ''}
                     ${state.bloatAlert ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:4px 6px;">
                         <span style="font-size:10px;color:#fca5a5;">Bloat alert: park ${esc(state.bloatAlert.topServers.join(', '))} (~${k(state.bloatAlert.savingsTok)} tok)</span>
                         <button id="cp-park-heavy" style="background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.45);color:#fca5a5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;cursor:pointer;flex:none;">Park</button>
@@ -447,9 +665,13 @@ function installCtxPilotOverviewHub() {
                 ${S.div}
                 ${section('prompts', 'QUICK PROMPTS', '', promptsBody())}
                 ${S.div}
+                ${section('checkpoints', 'CHECKPOINTS', `<span style="${S.muted}">${(state.checkpoints || []).length}</span><button id="cp-cp-add" style="${S.ghost}" title="Snapshot current working tree">+ Snapshot</button>`, checkpointsBody())}
+                ${S.div}
+                ${section('timeline', 'TIMELINE', `<span style="${S.muted}">${(state.timeline || []).length}t</span>`, timelineBody())}
+                ${S.div}
                 ${section('fixes', 'FIXES', `<span style="${S.muted}">${(state.fixes || []).length}</span>`, fixesBody())}
                 ${S.div}
-                ${section('rules', 'RULES', `<span style="${S.muted}">${state.rules.filter(r => r.enabled).length}/${state.rules.length}</span><button id="cp-open-rules" style="${S.ghost}">Open</button>`, rulesBody())}
+                ${section('rules', 'RULES', `<span style="${S.muted}">${state.rules.filter(r => r.enabled).length}/${state.rules.length}</span><button id="cp-sync-agents" style="${S.ghost}" title="Sync AGENTS.md + .agents/rules + fixes to CLAUDE.md, Cursor, Windsurf">Sync</button><button id="cp-open-rules" style="${S.ghost}">Open</button>`, rulesBody())}
                 ${S.div}
                 ${section('hooks', 'HOOKS', `<span style="${S.muted}">${state.hooks.filter(h => h.enabled).length}/${state.hooks.length}</span><button id="cp-open-hooks" style="${S.ghost}">Open</button>`, hooksBody())}
                 ${S.div}
@@ -473,12 +695,42 @@ function installCtxPilotOverviewHub() {
             });
             on('#cp-subchat-tgl', () => { showSubChat = !showSubChat; render(true); });
             const launchSubChat = async () => {
-                const res = await invoke('ctxpilot:subchat', { topic: subChatTopic });
+                const topic = subChatTopic;
+                const res = await invoke('ctxpilot:subchat', { topic });
                 showSubChat = false;
                 subChatTopic = '';
-                if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`);
+                if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Sub-Chat (~${res.promptTokensEst} tok)`, { topic, res });
             };
             on('#cp-subchat-go', launchSubChat);
+            on('#cp-subchat-wt', async () => {
+                const topic = subChatTopic;
+                const res = await invoke('ctxpilot:worktree-subchat', { topic });
+                showSubChat = false;
+                subChatTopic = '';
+                state = await invoke('ctxpilot:state') || state;
+                if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Worktree (${res.branch})`, { topic: `wt: ${topic || res.branch}`, res });
+            });
+            on('#cp-cp-add', async () => {
+                state = await invoke('ctxpilot:checkpoint-create', 'manual') || state;
+                flashStatus('Checkpoint saved');
+            });
+            on('.cp-cp-rewind', async (el) => {
+                if (!window.confirm('Rewind working tree files to this checkpoint?')) return;
+                state = await invoke('ctxpilot:checkpoint-rewind', el.dataset.id) || state;
+                flashStatus('Rewound to checkpoint');
+            });
+            on('.cp-cp-rm', async (el) => { state = await invoke('ctxpilot:checkpoint-rm', el.dataset.id) || state; render(true); });
+            on('.cp-wt-rm', async (el) => { state = await invoke('ctxpilot:worktree-rm', el.dataset.path) || state; render(true); });
+            on('.cp-turn-fork', async (el) => {
+                const turn = Number(el.dataset.turn);
+                const res = await invoke('ctxpilot:fork-turn', turn);
+                if (res && res.markdown) openNewChatWithPrompt(res.markdown, `Fork Turn ${res.turn} (~${res.promptTokensEst} tok)`, { topic: `Fork Turn ${turn}`, res });
+            });
+            on('#cp-sync-agents', async () => {
+                const res = await invoke('ctxpilot:sync-agents', {});
+                const count = res && res.written ? res.written.filter(w => w.status === 'created' || w.status === 'updated').length : 0;
+                flashStatus(`Synced ${count} agent file(s)`);
+            });
             const subIn = hub.querySelector('#cp-subchat-topic');
             if (subIn) {
                 subIn.oninput = () => { subChatTopic = subIn.value; };
@@ -577,7 +829,8 @@ function installCtxPilotOverviewHub() {
     const start = () => {
         if (!document.body) { setTimeout(start, 200); return; }
         document.addEventListener('click', () => setTimeout(render, 120), { passive: true });
-        window.addEventListener('resize', renderActionBar, { passive: true });
+        window.addEventListener('resize', () => { renderActionBar(); renderSidebarSubChats(); }, { passive: true });
+        document.addEventListener('scroll', () => renderSidebarSubChats(), { passive: true, capture: true });
         setInterval(sync, 5000);
         setInterval(render, 1000);
         sync(true);

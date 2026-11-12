@@ -8,7 +8,11 @@ const { patchStatus, patchInstall, patchEnsure, patchRestore } = require('../src
 const { initWorkspace, initHubConfig } = require('../src/stack');
 const { runBench, formatBench } = require('../src/bench');
 const { exportBundle, importBundle } = require('../src/bundle');
-const { buildHandoff, buildSubChat, listFixes, addFix, removeFix } = require('../src/handoff');
+const { buildHandoff, buildSubChat, buildTurnTimeline, buildSubChatFromTurn, listFixes, addFix, removeFix } = require('../src/handoff');
+const { createCheckpoint, listCheckpoints, rewindCheckpoint, dropCheckpoint, createWorktreeSubChat, listWorktrees, removeWorktree } = require('../src/checkpoint');
+const { runVerify } = require('../src/verify');
+const { syncAgents } = require('../src/sync');
+const { runPrePushGate } = require('../src/gate');
 const pkg = require('../package.json');
 
 function parseArgs(argv) {
@@ -26,6 +30,10 @@ function parseArgs(argv) {
         else if (a === '--force') flags.force = true;
         else if (a === '--overwrite') flags.overwrite = true;
         else if (a === '--all') flags.all = true;
+        else if (a === '--worktree') flags.worktree = true;
+        else if (a === '--mcp') flags.mcp = true;
+        else if (a === '--skip-verify') flags.skipVerify = true;
+        else if (a === '--targets' && argv[i + 1]) flags.targets = argv[++i].split(',').map(s => s.trim()).filter(Boolean);
         else if (a === '--version' || a === '-v') flags.version = true;
         else if (a === '--help' || a === '-h') flags.help = true;
         else if ((a === '--workspace' || a === '-w') && argv[i + 1]) flags.workspaceDir = argv[++i];
@@ -53,7 +61,15 @@ Usage:
   ctx init     [nextjs|dotnet|node|python|auto] [--dry-run] [--force] [--workspace <dir>]
   ctx bench    [--run-hooks] [--json] [--workspace <dir>]
   ctx handoff  [--conv <id>] [--workspace <dir>] [--json]
-  ctx subchat  [topic...] [--conv <id>] [--workspace <dir>] [--json]
+  ctx subchat  [topic...] [--worktree] [--conv <id>] [--workspace <dir>] [--json]
+  ctx checkpoint create [label] | list | rm <id> [--dry-run] [--json]
+  ctx rewind   [<id>] [--dry-run] [--json]
+  ctx verify   [--workspace <dir>] [--json]
+  ctx gate     [--strict] [--skip-verify] [--workspace <dir>] [--json]
+  ctx sync     [--targets claude,codex,cursor,windsurf] [--mcp] [--dry-run] [--json]
+  ctx timeline [--conv <id>] [--json]
+  ctx fork     <turn> [--conv <id>] [--json]
+  ctx worktree list | rm <path> [--dry-run] [--json]
   ctx fix      add "<note>" | list [--all] | rm <id> [--dry-run] [--json]
   ctx bundle   export [--out <file>] [--strict] [--dry-run] | import <file> [--overwrite] [--dry-run]
 
@@ -217,9 +233,66 @@ async function main() {
 
     if (cmd === 'subchat') {
         const topic = flags._.slice(1).join(' ');
-        const res = buildSubChat({ ...flags, topic });
+        const res = flags.worktree ? createWorktreeSubChat(topic, flags) : buildSubChat({ ...flags, topic });
         console.log(flags.json ? JSON.stringify(res, null, 2) : res.markdown);
         return;
+    }
+
+    if (cmd === 'checkpoint') {
+        const sub = arg || 'list';
+        if (sub === 'list') {
+            const items = listCheckpoints(flags);
+            if (flags.json) console.log(JSON.stringify(items, null, 2));
+            else if (!items.length) console.log('No checkpoints found.');
+            else for (const c of items) console.log(`  [${c.id}] ${c.label} (${c.branch}, ${c.dirtyCount} dirty) — ${c.createdAt}`);
+            return;
+        }
+        if (sub === 'create') {
+            const label = flags._.slice(2).join(' ') || 'manual';
+            const res = createCheckpoint(label, flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Checkpoint [${res.id}]: ${res.label}`);
+            return;
+        }
+        if (sub === 'rm') {
+            if (!flags._[2]) throw new Error('Usage: ctx checkpoint rm <id>');
+            const res = dropCheckpoint(flags._[2], flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Removed ${res.removed} checkpoint(s).`);
+            return;
+        }
+        throw new Error('Usage: ctx checkpoint create [label] | list | rm <id>');
+    }
+
+    if (cmd === 'rewind') {
+        const res = rewindCheckpoint(arg, flags);
+        console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Rewound working tree to [${res.id}] ${res.label}`);
+        return;
+    }
+
+    if (cmd === 'verify') {
+        const res = await runVerify(flags);
+        if (flags.json) console.log(JSON.stringify(res, null, 2));
+        else if (res.skipped) console.log(res.reason);
+        else console.log(`[${res.ok ? 'OK' : 'FAIL'}] ${res.command} (${res.durationMs} ms): ${res.summaryLine}`);
+        if (!res.ok && !res.skipped) process.exitCode = 1;
+        return;
+    }
+
+    if (cmd === 'worktree') {
+        const sub = arg || 'list';
+        if (sub === 'list') {
+            const items = listWorktrees(flags);
+            if (flags.json) console.log(JSON.stringify(items, null, 2));
+            else if (!items.length) console.log('No ctxpilot worktrees found.');
+            else for (const w of items) console.log(`  ${w.branch} -> ${w.path}`);
+            return;
+        }
+        if (sub === 'rm') {
+            if (!flags._[2]) throw new Error('Usage: ctx worktree rm <path>');
+            const res = removeWorktree(flags._[2], flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Removed worktree ${res.branch}`);
+            return;
+        }
+        throw new Error('Usage: ctx worktree list | rm <path>');
     }
 
     if (cmd === 'fix') {
@@ -244,6 +317,44 @@ async function main() {
             return;
         }
         throw new Error('Usage: ctx fix add "<note>" | list [--all] | rm <id>');
+    }
+
+    if (cmd === 'sync') {
+        const res = syncAgents(flags);
+        if (flags.json) console.log(JSON.stringify(res, null, 2));
+        else if (!res.written.length) console.log(res.reason || 'Nothing to sync.');
+        else {
+            console.log(`${res.dryRun ? '[DRY-RUN] ' : ''}Synced from ${res.source}:`);
+            for (const f of res.written) console.log(`  - ${f.target} (${f.status}): ${f.path}`);
+        }
+        return;
+    }
+
+    if (cmd === 'gate') {
+        const res = await runPrePushGate(flags);
+        if (flags.json) console.log(JSON.stringify(res, null, 2));
+        else {
+            console.log(`Pre-Push Gate: ${res.ok ? 'PASS' : 'BLOCKED'} (${res.dirtyCount} dirty: ${res.chatFiles.length} chat, ${res.otherFiles.length} local)`);
+            for (const b of res.blockers) console.log(`  [FAIL] ${b.file}: ${b.message}`);
+            for (const w of res.warnings) console.log(`  [WARN] ${w.file}: ${w.message}`);
+            if (!res.verify.skipped) console.log(`  [VERIFY] ${res.verify.ok ? 'OK' : 'FAIL'} (${res.verify.command}): ${res.verify.summaryLine}`);
+        }
+        if (!res.ok) process.exitCode = 1;
+        return;
+    }
+
+    if (cmd === 'timeline') {
+        const res = buildTurnTimeline(flags);
+        if (flags.json) console.log(JSON.stringify(res, null, 2));
+        else if (!res.turns.length) console.log('No turns found.');
+        else for (const t of res.turns) console.log(`  T${t.turn} | ${t.tokens} tok | ${t.filesEdited.length} file(s) | ${t.prompt}`);
+        return;
+    }
+
+    if (cmd === 'fork') {
+        const res = buildSubChatFromTurn(arg, flags);
+        console.log(flags.json ? JSON.stringify(res, null, 2) : res.markdown);
+        return;
     }
 
     console.error(`Unknown command: ${cmd}\nRun "ctx --help" for usage.`);

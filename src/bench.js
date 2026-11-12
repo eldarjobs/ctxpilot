@@ -4,7 +4,7 @@ const { spawnSync } = require('child_process');
 const { performance } = require('perf_hooks');
 const { getPaths, discoverRules, tryParseJson, RULE_MAX_BYTES, RULES_AGGREGATE_TOKEN_BUDGET } = require('./discovery');
 
-const HOOK_BUDGET_MS = 150;
+const HOOK_BUDGET_MS = 500;
 const HOOK_EVENTS = ['SessionStart', 'PreToolUse', 'PostToolUse', 'PreInvocation', 'PostInvocation', 'Stop'];
 
 function extractHookCommands(hooksData) {

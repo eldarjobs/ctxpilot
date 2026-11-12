@@ -24,8 +24,8 @@ function analyzeContext(opts = {}) {
     const conditionalBytes = conditionalRules.reduce((s, r) => s + r.bytes, 0);
     const alwaysOnTokensEst = estTokensFromBytes(alwaysOnBytes, CHARS_PER_TOKEN_PROSE);
 
-    // 2. Active MCP tool schema breakdown (exclude parked/disabled servers)
-    const activeServers = mcp.servers.filter(s => !s.parked && !s.disabledInConfig && mcp.toggles[s.id] !== false);
+    // 2. Active Antigravity MCP tool schema breakdown (exclude parked/disabled & external clients)
+    const activeServers = mcp.servers.filter(s => (!s.client || s.client === 'antigravity') && !s.parked && !s.disabledInConfig && mcp.toggles[s.id] !== false);
     const mcpBreakdown = activeServers.map(s => ({
         id: s.id,
         toolCount: s.tools.length,
@@ -114,7 +114,10 @@ function formatContext(report) {
     if (report.transcript.available) {
         out.push(`   Conversation: ${report.transcript.convId}`);
         out.push(`   Context used: ${report.transcript.totalContextTokens.toLocaleString()} tok (Cache hit: ${report.transcript.cacheHitPct}%)`);
-        out.push(`   Last output:  ${report.transcript.outputTokens.toLocaleString()} tok`);
+        out.push(`   Session burn: ${(report.transcript.sessionInputTokens || 0).toLocaleString()} fresh in · ${(report.transcript.sessionCacheReadTokens || 0).toLocaleString()} cached · ${(report.transcript.sessionOutputTokens || 0).toLocaleString()} out (${report.transcript.stepsInTail} steps)`);
+        if (report.transcript.cacheHealth && report.transcript.cacheHealth.status === 'WARN') {
+            out.push(`   [WARN] ${report.transcript.cacheHealth.message}`);
+        }
     } else {
         out.push(`   Unavailable (${report.transcript.reason})`);
     }

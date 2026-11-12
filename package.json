@@ -1,7 +1,7 @@
 {
   "name": "ctxpilot",
-  "version": "0.4.0",
-  "description": "Unofficial context budget analyzer, MCP profile & RO/RW manager, secret hygiene doctor, and Antigravity Overview Hub patcher.",
+  "version": "0.5.0",
+  "description": "Zero-dependency context budget analyzer, multi-client MCP & secret doctor, git checkpoint/rewind, silent verify, and Antigravity Overview Hub.",
   "bin": {
     "ctxpilot": "./bin/ctxpilot.js",
     "ctx": "./bin/ctxpilot.js"
@@ -16,7 +16,12 @@
   "keywords": [
     "antigravity",
     "mcp",
+    "claude-code",
+    "cursor",
+    "windsurf",
     "context-engineering",
+    "rewind",
+    "worktree",
     "doctor",
     "cli",
     "secrets"

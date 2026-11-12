@@ -29,7 +29,7 @@ describe('zero-telemetry & read-only guarantees', () => {
     });
 
     it('source modules do not import telemetry or external HTTP clients', () => {
-        for (const f of ['redact.js', 'discovery.js', 'transcript-adapter.js', 'doctor.js', 'context.js', 'stack.js', 'secret-fix.js', 'bench.js', 'bundle.js', 'handoff.js']) {
+        for (const f of ['redact.js', 'discovery.js', 'transcript-adapter.js', 'doctor.js', 'context.js', 'stack.js', 'secret-fix.js', 'bench.js', 'bundle.js', 'handoff.js', 'checkpoint.js', 'verify.js', 'sync.js', 'gate.js']) {
             const src = fs.readFileSync(path.join(__dirname, '..', 'src', f), 'utf8');
             assert.equal(/require\(['"](https?|axios|node-fetch|undici)['"]\)/.test(src), false, `unexpected HTTP dependency in ${f}`);
         }
