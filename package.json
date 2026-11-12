@@ -1,6 +1,9 @@
 {
-  "name": "ctxpilot",
+  "name": "@eldareyvazli/ctxpilot",
   "version": "0.5.0",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "Zero-dependency context budget analyzer, multi-client MCP & secret doctor, git checkpoint/rewind, silent verify, and Antigravity Overview Hub.",
   "bin": {
     "ctxpilot": "bin/ctxpilot.js",
