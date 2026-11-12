@@ -111,6 +111,17 @@ ctx unpark mssql                  # restore it
 ctx ro mssql                      # enforce READONLY=true
 ```
 
+### `ctx patch` (Overview Panel Integration inside Antigravity)
+
+Injects the full `CTXPILOT` hub directly inside Antigravity's Overview sidebar (Context bar, Static Overhead breakdown, MCP Park & RO/RW toggles, Profiles, Doctor findings, Project Actions, Quick Prompts, Rules, Hooks, Skills, Token History) with SHA-256 verification of untouched files:
+
+```bash
+ctx patch install --dry-run   # preview version & build hash without modifying files
+ctx patch install --restart   # verify, patch app.asar (backing up app.asar.bak), and relaunch
+ctx patch status
+ctx patch restore --restart   # restore original app.asar.bak anytime
+```
+
 ### `ctx ui install` (Zero-Patch Antigravity Sidecar UI)
 
 Installs an official Antigravity Aux-Pane Sidecar Plugin at `~/.gemini/config/plugins/ctxpilot/` showing Context Budget, MCP toggles, `RO/RW` switches, Doctor findings, Rules, and Hooks right inside Antigravity — without touching `app.asar`.

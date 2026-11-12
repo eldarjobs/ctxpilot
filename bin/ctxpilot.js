@@ -4,6 +4,7 @@ const { runDoctor, formatDoctor } = require('../src/doctor');
 const { analyzeContext, formatContext } = require('../src/context');
 const { parkServer, unparkServer, setReadonly, listProfiles, applyProfile } = require('../src/mcp-control');
 const { installSidecarPlugin, uninstallSidecarPlugin, statusSidecarPlugin } = require('../src/plugin-installer');
+const { patchStatus, patchInstall, patchRestore } = require('../src/patcher');
 const pkg = require('../package.json');
 
 function parseArgs(argv) {
@@ -15,9 +16,11 @@ function parseArgs(argv) {
         else if (a === '--strict') flags.strict = true;
         else if (a === '--ping') flags.ping = true;
         else if (a === '--dry-run') flags.dryRun = true;
+        else if (a === '--restart') flags.restart = true;
         else if (a === '--version' || a === '-v') flags.version = true;
         else if (a === '--help' || a === '-h') flags.help = true;
         else if ((a === '--workspace' || a === '-w') && argv[i + 1]) flags.workspaceDir = argv[++i];
+        else if (a === '--resources' && argv[i + 1]) flags.resources = argv[++i];
         else if (a === '--conv' && argv[i + 1]) flags.conv = argv[++i];
         else flags._.push(a);
     }
@@ -25,7 +28,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-    console.log(`ctxpilot (ctx) v${pkg.version} - Unofficial Antigravity Context, MCP & Zero-Patch Sidecar UI
+    console.log(`ctxpilot (ctx) v${pkg.version} - Unofficial Antigravity Context, MCP & Overview Hub
 
 Usage:
   ctx doctor   [--json] [--fix-suggest] [--strict] [--ping] [--workspace <dir>]
@@ -35,10 +38,12 @@ Usage:
   ctx ro       <server> [--dry-run] [--workspace <dir>]
   ctx rw       <server> [--dry-run] [--workspace <dir>]
   ctx profile  list | <name> [--dry-run] [--workspace <dir>]
+  ctx patch    install | restore | status [--restart] [--dry-run] [--resources <dir>]
   ctx ui       install | uninstall | status | serve [--dry-run]
 
 Flags:
   --dry-run        Preview config/file changes without writing
+  --restart        Close and relaunch Antigravity automatically when patching (Windows)
   --json           Machine-readable JSON output
   --fix-suggest    Print \${ENV_VAR} replacement snippets (read-only)
   --strict         Exit 1 on warnings as well as failures (doctor)
@@ -93,6 +98,34 @@ async function main() {
             for (const c of res.changes) console.log(`  - ${c.action} ${c.id}${c.value ? ` (${c.key}=${c.value})` : ''}`);
         }
         return;
+    }
+
+    if (cmd === 'patch') {
+        const sub = arg || 'status';
+        if (sub === 'status') {
+            const res = patchStatus(flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : `Antigravity ${res.version || '?'} | patched: ${res.patched} | upToDate: ${res.upToDate} | backup: ${res.hasBackup}`);
+            return;
+        }
+        if (sub === 'install') {
+            const res = patchInstall(flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : res.dryRun
+                ? `[DRY-RUN] Would patch Antigravity ${res.version} (build ${res.buildHash}) in ${res.resDir}`
+                : res.scheduledRestart
+                    ? `Verified build ${res.buildHash} for Antigravity ${res.version} (${res.checked} untouched files OK). Restarting Antigravity to apply into Overview...`
+                    : `Patched Antigravity ${res.version} (build ${res.buildHash}, ${res.checked} untouched files OK).`);
+            return;
+        }
+        if (sub === 'restore') {
+            const res = patchRestore(flags);
+            console.log(flags.json ? JSON.stringify(res, null, 2) : res.dryRun
+                ? `[DRY-RUN] Would restore ${res.installed} from ${res.backup}`
+                : res.scheduledRestart
+                    ? 'Closing Antigravity, restoring original app.asar, and relaunching...'
+                    : `Restored ${res.installed}`);
+            return;
+        }
+        throw new Error(`Unknown patch subcommand: ${sub}`);
     }
 
     if (cmd === 'ui') {
