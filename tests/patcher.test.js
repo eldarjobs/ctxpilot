@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { readArchive, readEntry } = require('../src/asar');
-const { patchInstall, patchStatus, patchRestore } = require('../src/patcher');
+const { patchInstall, patchEnsure, patchStatus, patchRestore } = require('../src/patcher');
+const { runDoctor } = require('../src/doctor');
 
 function makeSyntheticAsar(outFile) {
     const files = {
@@ -44,7 +45,7 @@ function makeSyntheticAsar(outFile) {
 }
 
 describe('Overview Hub ASAR patcher', () => {
-    it('supports --dry-run, patches cleanly, preserves untouched files, and restores backup', () => {
+    it('supports --dry-run, patches cleanly, preserves untouched files, and restores backup', async () => {
         const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ctxpilot-asar-'));
         try {
             const asarPath = path.join(tmp, 'app.asar');
@@ -70,6 +71,15 @@ describe('Overview Hub ASAR patcher', () => {
 
             patchRestore({ resources: tmp });
             assert.equal(patchStatus({ resources: tmp }).patched, false);
+
+            // Doctor detects wiped patch when app.asar.bak exists, and patchEnsure restores it
+            const doc = await runDoctor({ homeDir: tmp, workspaceDir: tmp, resources: tmp });
+            assert.equal(doc.findings.some(f => f.category === 'patch' && f.level === 'WARN'), true);
+
+            const ens1 = patchEnsure({ resources: tmp });
+            assert.equal(ens1.installed, true);
+            const ens2 = patchEnsure({ resources: tmp });
+            assert.equal(ens2.alreadyUpToDate, true);
         } finally {
             fs.rmSync(tmp, { recursive: true, force: true });
         }

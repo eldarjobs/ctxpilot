@@ -2,7 +2,7 @@
 
 > **See where your context window goes, catch leaked MCP secrets, safely cut prompt bloat, and manage everything directly inside Antigravity's Overview sidebar.**
 
-`ctxpilot` (`ctx`) is an unofficial, zero-dependency CLI & **Antigravity Overview Hub patcher** (`v0.3.0`).
+`ctxpilot` (`ctx`) is an unofficial, zero-dependency CLI & **Antigravity Overview Hub patcher** (`v0.4.0`).
 
 ---
 
@@ -58,6 +58,7 @@ Summary: 7 ok, 0 warning(s), 1 failure(s).
 ```
 
 Flags:
+- `--fix` — backs up `mcp_config.json`, moves plaintext tokens to OS User Env + `~/.gemini/.env`, and rewrites to `${ENV_VAR}`
 - `--fix-suggest` — prints `${ENV_VAR}` replacement snippets without writing files
 - `--strict` — exit code `1` on warnings as well as failures
 - `--json` — machine-readable JSON (secrets remain redacted)
@@ -118,9 +119,17 @@ Injects the full `CTXPILOT` hub directly inside Antigravity's Overview sidebar (
 ```bash
 ctx patch install --dry-run   # preview version & build hash without modifying files
 ctx patch install --restart   # verify, patch app.asar (backing up app.asar.bak), and relaunch
+ctx patch ensure --restart    # idempotent: only patches if missing or outdated after Antigravity update
 ctx patch status
 ctx patch restore --restart   # restore original app.asar.bak anytime
 ```
+
+### `ctx init` / `ctx hub init` / `ctx bench` / `ctx bundle`
+
+- **`ctx init [nextjs|dotnet|node|python|auto]`**: Auto-detects stack and scaffolds lean `.agents/rules/01-stack-conventions.md` + `.agents/hub.json` (with `--dry-run` / `--force`).
+- **`ctx hub init`**: Generates `.agents/hub.json` with detected `profile`, `actions`, and `prompts`.
+- **`ctx bench [--run-hooks]`**: Audits rule bloat, `always_on` budget, and duplicate lines statically; pass `--run-hooks` to benchmark enabled hooks (`<150 ms` budget, `{}` stdin, 2s timeout).
+- **`ctx bundle export | import`**: Exports `.agents/rules`, `hooks.json`, `hub.json`, and sanitized MCP server templates (`${ENV_VAR}`) to `ctxpilot-bundle.json`, and imports cleanly with `--dry-run` / `--overwrite`.
 
 ---
 
@@ -128,8 +137,8 @@ ctx patch restore --restart   # restore original app.asar.bak anytime
 
 - **`v0.1`**: Read-only `doctor` + `context` + `SECURITY.md` (done)
 - **`v0.2`**: `ctx` alias, MCP profiles (`full`, `code-docs`, `db-ro`, `lean`), `park/unpark/ro/rw`, `--dry-run` (done)
-- **`v0.3`** (current): Direct Antigravity Overview Hub injection via `ctx patch install | restore | status` with SHA-256 verification and `app.asar.bak` backup (done)
-- **`v0.4`**: Team bundle export/import with fuzz-tested secret sanitizer, stack presets (`nextjs`, `dotnet-clean`)
+- **`v0.3`**: Direct Antigravity Overview Hub injection via `ctx patch install | restore | status` with SHA-256 verification and `app.asar.bak` backup (done)
+- **`v0.4`** (current): Smart Bloat Cutter & Workspace Auto-Profile in Hub, `doctor --fix`, `patch ensure`, `hub init`, `init` stack presets, `bench`, and sanitized `bundle export/import` (done)
 - **`v1.0`**: npm provenance, SBOM
 
 ## Security & Compatibility

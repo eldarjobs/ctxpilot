@@ -1,6 +1,6 @@
 {
   "name": "ctxpilot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Unofficial context budget analyzer, MCP profile & RO/RW manager, secret hygiene doctor, and Antigravity Overview Hub patcher.",
   "bin": {
     "ctxpilot": "./bin/ctxpilot.js",

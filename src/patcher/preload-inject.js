@@ -74,7 +74,7 @@ function installCtxPilotOverviewHub() {
             state.restartPending, state.doctor?.summary, state.context?.staticOverheadTokensEst,
             state.context?.transcript?.totalContextTokens, state.rules?.map(r => [r.name, r.enabled]),
             state.hooks?.map(h => [h.name, h.enabled]), state.skills?.length, state.actions,
-            state.meta, expandedSrv, open, history.map(h => [h.id, h.peak]),
+            state.meta, state.profileHint, state.bloatAlert, expandedSrv, open, history.map(h => [h.id, h.peak]),
         ]);
     }
 
@@ -207,9 +207,10 @@ function installCtxPilotOverviewHub() {
             const c = state.context;
             const d = state.doctor;
             const t = c.transcript;
-            const limit = t && t.available ? (t.totalContextTokens > 200000 ? 1000000 : 200000) : 200000;
+            const limit = t && t.available ? (t.totalContextTokens > 260000 ? 1000000 : 250000) : 250000;
             const pct = t && t.available ? Math.min(100, Math.round(t.totalContextTokens / limit * 100)) : 0;
             const uc = pct >= 80 ? '#ef4444' : pct >= 60 ? '#f59e0b' : '#10b981';
+            const convTag = t && t.convId ? `chat ${t.convId.slice(0, 8)}` : 'transcript';
 
             const m = state.meta || {};
             const wsTitle = `${m.name || 'Workspace'}${m.branch ? ` @ ${m.branch}` : ''}${m.dirtyCount ? ` (${m.dirtyCount})` : ''}`;
@@ -222,7 +223,7 @@ function installCtxPilotOverviewHub() {
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
                     <span style="${S.label}">CTXPILOT</span>
                     <div style="display:flex;gap:4px;">
-                        <button id="cp-compact" style="${S.btn}">Run /compact</button>
+                        <button id="cp-compact" style="${S.btn}" title="Runs /compact summary (note: Antigravity only resets context on New Chat or auto-CHECKPOINT)">/compact</button>
                         <button id="cp-refresh" style="${S.ghost}">Refresh</button>
                     </div>
                 </div>
@@ -237,10 +238,18 @@ function installCtxPilotOverviewHub() {
                 <div style="display:flex;flex-direction:column;gap:4px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;">
                         <span style="${S.label}">CONTEXT</span>
-                        <span style="font-size:10px;color:${uc};font-weight:600;">${t && t.available ? `${k(t.totalContextTokens)} / ${k(limit)} (${pct}% · ${t.cacheHitPct}% cache)` : 'no transcript'}</span>
+                        <span style="font-size:10px;color:${uc};font-weight:600;" title="${esc(convTag)}">${t && t.available ? `${k(t.totalContextTokens)} / ${k(limit)} (${pct}% · ${t.cacheHitPct}% cache)` : 'no transcript'}</span>
                     </div>
                     ${t && t.available ? `<div style="height:4px;background:#27272a;border-radius:2px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:${uc};"></div></div>` : ''}
                     <div style="font-size:10px;color:#a1a1aa;">Static ~${k(c.staticOverheadTokensEst)} tok (Rules ~${k(c.rules.alwaysOnTokensEst)} · MCP ~${k(c.mcp.totalTokensEst)} · Skills ~${k(c.skills.tokensEst)})</div>
+                    ${state.bloatAlert ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:5px;padding:4px 6px;">
+                        <span style="font-size:10px;color:#fca5a5;">Bloat alert: park ${esc(state.bloatAlert.topServers.join(', '))} (~${k(state.bloatAlert.savingsTok)} tok)</span>
+                        <button id="cp-park-heavy" style="background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.45);color:#fca5a5;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:600;cursor:pointer;flex:none;">Park</button>
+                    </div>` : ''}
+                    ${state.profileHint ? `<div style="display:flex;align-items:center;justify-content:space-between;gap:6px;background:rgba(59,130,246,.09);border:1px solid rgba(59,130,246,.28);border-radius:5px;padding:4px 6px;">
+                        <span style="font-size:10px;color:#93c5fd;">${esc(state.profileHint.stack)} -> "${esc(state.profileHint.profile)}"${state.profileHint.savingsTok ? ` (-~${k(state.profileHint.savingsTok)} tok)` : ''}</span>
+                        <button id="cp-apply-hint" style="${S.btn}padding:2px 6px;font-size:10px;flex:none;">Apply</button>
+                    </div>` : ''}
                 </div>
                 ${S.div}
                 ${section('mcp', 'MCP & PROFILES', `<span style="font-size:10px;color:${activeMcps ? '#10b981' : '#71717a'};font-weight:600;">${activeMcps}/${state.servers.length}</span><button id="cp-open-mcp" style="${S.ghost}">Config</button>`, mcpBody())}
@@ -266,8 +275,10 @@ function installCtxPilotOverviewHub() {
             applyFilter();
 
             const on = (sel, fn) => hub.querySelectorAll(sel).forEach(el => { el.onclick = (e) => fn(el, e); });
-            on('#cp-compact', (b) => { b.textContent = 'Sent'; sendPrompt('/compact'); setTimeout(() => { b.textContent = 'Run /compact'; }, 1200); });
+            on('#cp-compact', (b) => { b.textContent = 'Sent'; sendPrompt('/compact'); setTimeout(() => { b.textContent = '/compact'; }, 1200); });
             on('#cp-refresh', () => sync(true));
+            on('#cp-park-heavy', async () => { if (state.bloatAlert) { state = await invoke('ctxpilot:park-heavy', state.bloatAlert.topServers) || state; render(true); } });
+            on('#cp-apply-hint', async () => { if (state.profileHint) { state = await invoke('ctxpilot:apply-profile', state.profileHint.profile) || state; render(true); } });
             on('#cp-pick-ws', async () => { state = await invoke('ctxpilot:pick-workspace') || state; sync(true); });
             on('#cp-open-mcp', () => invoke('ctxpilot:open-path', 'mcpConfig'));
             on('#cp-open-rules', () => invoke('ctxpilot:open-path', 'rulesDir'));

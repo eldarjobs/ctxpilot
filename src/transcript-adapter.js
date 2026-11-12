@@ -2,7 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const TAIL_BYTES = 64 * 1024;
+const TAIL_BYTES = 512 * 1024;
 
 /**
  * Versioned adapter for Antigravity's undocumented transcript.jsonl format.

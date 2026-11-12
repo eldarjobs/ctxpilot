@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { getPaths, discoverMcp, discoverRules, tryParseJson, RULE_MAX_BYTES, RULES_AGGREGATE_TOKEN_BUDGET } = require('./discovery');
 const { scanServerSecrets } = require('./redact');
+const { patchStatus } = require('./patcher');
 
 const DB_SERVER_RE = /(mssql|postgres|postgresql|mysql|sqlite|mariadb|oracle|mongo)/i;
 
@@ -189,6 +190,22 @@ async function runDoctor(opts = {}) {
             const count = Object.keys(hooksParsed.data || {}).length;
             add('hooks', '.agents/hooks.json', 'OK', `Valid JSON (${count} hook group(s))`);
         }
+    }
+
+    // 5. Antigravity Overview Hub patch resilience check
+    if (opts.resources || !opts.homeDir) {
+        try {
+            const ps = patchStatus({ resources: opts.resources });
+            if (ps.found) {
+                if (ps.patched && ps.upToDate) {
+                    add('patch', 'Antigravity app.asar', 'OK', `Overview Hub patched (v${ps.version}, build ${ps.sourceBuild})`);
+                } else if (ps.patched && !ps.upToDate) {
+                    add('patch', 'Antigravity app.asar', 'WARN', `Overview Hub build outdated (${ps.installedBuild || 'legacy'} -> ${ps.sourceBuild}); run "ctx patch ensure"`);
+                } else if (!ps.patched && ps.hasBackup) {
+                    add('patch', 'Antigravity app.asar', 'WARN', `Antigravity update wiped Overview Hub patch (v${ps.version}); run "ctx patch ensure"`);
+                }
+            }
+        } catch {}
     }
 
     const summary = {

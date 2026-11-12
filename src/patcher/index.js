@@ -113,7 +113,7 @@ function patchInstall(opts = {}) {
 
     const coreCacheDir = path.join(os.homedir(), '.gemini', 'config', 'ctxpilot_core');
     fs.mkdirSync(coreCacheDir, { recursive: true });
-    for (const f of ['context.js', 'discovery.js', 'doctor.js', 'mcp-control.js', 'redact.js', 'transcript-adapter.js']) {
+    for (const f of ['context.js', 'discovery.js', 'doctor.js', 'mcp-control.js', 'redact.js', 'stack.js', 'transcript-adapter.js']) {
         fs.copyFileSync(path.join(__dirname, '..', f), path.join(coreCacheDir, f));
     }
     const corePathJson = JSON.stringify(coreCacheDir);
@@ -167,4 +167,13 @@ function patchRestore(opts = {}) {
     }
 }
 
-module.exports = { patchStatus, patchInstall, patchRestore, verifyArchive };
+function patchEnsure(opts = {}) {
+    const st = patchStatus(opts);
+    if (!st.found) throw new Error('Antigravity resources directory not found. Pass --resources <dir>.');
+    if (st.patched && st.upToDate) {
+        return { action: 'patch-ensure', alreadyUpToDate: true, version: st.version, buildHash: st.sourceBuild };
+    }
+    return { ...patchInstall(opts), action: 'patch-ensure', previouslyPatched: st.patched };
+}
+
+module.exports = { patchStatus, patchInstall, patchEnsure, patchRestore, verifyArchive };

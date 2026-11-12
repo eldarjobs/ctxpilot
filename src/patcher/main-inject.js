@@ -7,6 +7,7 @@
     const { runDoctor: cpRunDoctor } = require(path.join(cpCoreDir, 'doctor.js'));
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
     const { parkServer: cpPark, unparkServer: cpUnpark, setReadonly: cpSetRo, applyProfile: cpApplyProfile, listProfiles: cpListProfiles } = require(path.join(cpCoreDir, 'mcp-control.js'));
+    const { recommendProfile: cpRecommendProfile } = require(path.join(cpCoreDir, 'stack.js'));
 
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
@@ -150,6 +151,31 @@
         const doc = await cpRunDoctor({});
         const { actions, customPrompts } = cpDiscoverActions(paths.workspaceDir);
         const skills = cpDiscoverSkills(paths);
+        const profiles = cpListProfiles({});
+        const hubCfg = cpReadJson(path.join(paths.workspaceDir, '.agents', 'hub.json'));
+        const servers = mcp.servers.map(s => {
+            const env = (s.def && s.def.env) || {};
+            const roKey = ['READONLY', 'DB_READONLY'].find(k => Object.prototype.hasOwnProperty.call(env, k));
+            const schemaInfo = ctx.mcp.servers.find(m => m.id === s.id);
+            return {
+                id: s.id,
+                transport: s.transport,
+                parked: s.parked,
+                configurable: paths.mcpConfigs.includes(s.source) || s.parked,
+                toolCount: s.tools.length,
+                tools: s.tools,
+                tokensEst: schemaInfo ? schemaInfo.tokensEst : 0,
+                readonly: roKey ? String(env[roKey]).toLowerCase() === 'true' : null,
+            };
+        });
+        const profileHint = cpRecommendProfile(paths.workspaceDir, servers, hubCfg, profiles);
+        const t = ctx.transcript;
+        const limit = t && t.available ? (t.totalContextTokens > 200000 ? 1000000 : 200000) : 200000;
+        const ctxPct = t && t.available ? Math.round(t.totalContextTokens / limit * 100) : 0;
+        const heavyActive = servers.filter(s => !s.parked && s.configurable && s.tokensEst >= 1200).sort((a, b) => b.tokensEst - a.tokensEst);
+        const bloatAlert = (ctxPct >= 75 || ctx.staticOverheadTokensEst >= 15000) && heavyActive.length > 0
+            ? { ctxPct, staticTok: ctx.staticOverheadTokensEst, topServers: heavyActive.slice(0, 2).map(s => s.id), savingsTok: heavyActive.slice(0, 2).reduce((n, s) => n + s.tokensEst, 0) }
+            : null;
         return {
             workspace: paths.workspaceDir,
             configPath: mcp.configFiles[0]?.path || paths.mcpConfigs[0],
@@ -157,22 +183,10 @@
             meta: cpMeta(paths.workspaceDir),
             context: ctx,
             doctor: doc,
-            servers: mcp.servers.map(s => {
-                const env = (s.def && s.def.env) || {};
-                const roKey = ['READONLY', 'DB_READONLY'].find(k => Object.prototype.hasOwnProperty.call(env, k));
-                const schemaInfo = ctx.mcp.servers.find(m => m.id === s.id);
-                return {
-                    id: s.id,
-                    transport: s.transport,
-                    parked: s.parked,
-                    configurable: paths.mcpConfigs.includes(s.source) || s.parked,
-                    toolCount: s.tools.length,
-                    tools: s.tools,
-                    tokensEst: schemaInfo ? schemaInfo.tokensEst : 0,
-                    readonly: roKey ? String(env[roKey]).toLowerCase() === 'true' : null,
-                };
-            }),
-            profiles: Object.entries(cpListProfiles({})).map(([id, p]) => ({ id, description: p.description || '' })),
+            servers,
+            profiles: Object.entries(profiles).map(([id, p]) => ({ id, description: p.description || '' })),
+            profileHint: profileHint.changesCount > 0 ? profileHint : null,
+            bloatAlert,
             rules: cpListRules(paths.workspaceDir),
             hooks: cpListHooks(paths.workspaceDir),
             skills,
@@ -199,6 +213,13 @@
     electron_1.ipcMain.handle('ctxpilot:apply-profile', async (_e, profile) => {
         const res = cpApplyProfile(profile);
         if (res.changes.length > 0) cpRestartPending = true;
+        return cpState();
+    });
+
+    electron_1.ipcMain.handle('ctxpilot:park-heavy', async (_e, ids) => {
+        if (Array.isArray(ids)) {
+            for (const id of ids) { try { cpPark(id); cpRestartPending = true; } catch {} }
+        }
         return cpState();
     });
 
