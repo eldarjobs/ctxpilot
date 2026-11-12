@@ -651,15 +651,21 @@ function installCtxPilotOverviewHub() {
     }
 
     function render(force) {
-        if (rendering || !document.body || !state) return;
+        if (rendering || !document.body || !state || document.hidden) return;
         rendering = true;
         try {
             renderActionBar();
             renderSidebarSubChats();
-            const target = findOverviewMenu();
-            if (!target) return;
-            const { container, anchorRow } = target;
-            let hub = container.querySelector('#ctxpilot-overview-hub');
+            let hub = document.getElementById('ctxpilot-overview-hub');
+            let container = hub && hub.isConnected ? hub.parentElement : null;
+            let anchorRow = null;
+            if (!container) {
+                const target = findOverviewMenu();
+                if (!target) return;
+                container = target.container;
+                anchorRow = target.anchorRow;
+                hub = container.querySelector('#ctxpilot-overview-hub');
+            }
             const key = renderKey();
             if (hub && hub.dataset.key === key && !force) return;
             if (!hub) {
@@ -886,10 +892,11 @@ function installCtxPilotOverviewHub() {
 
     let tick = 0;
     async function sync(force) {
+        if (document.hidden && !force) return;
         try {
             const heavy = force || tick % 6 === 0;
             const [s, h] = await Promise.all([
-                invoke('ctxpilot:state'),
+                invoke('ctxpilot:state', Boolean(force)),
                 heavy ? invoke('ctxpilot:token-history') : Promise.resolve(null),
             ]);
             if (s) state = s;
@@ -901,11 +908,10 @@ function installCtxPilotOverviewHub() {
 
     const start = () => {
         if (!document.body) { setTimeout(start, 200); return; }
-        document.addEventListener('click', () => setTimeout(render, 120), { passive: true });
-        window.addEventListener('resize', () => { renderActionBar(); renderSidebarSubChats(); }, { passive: true });
-        document.addEventListener('scroll', () => renderSidebarSubChats(), { passive: true, capture: true });
-        setInterval(sync, 5000);
-        setInterval(render, 1000);
+        document.addEventListener('click', () => setTimeout(render, 140), { passive: true });
+        window.addEventListener('resize', renderActionBar, { passive: true });
+        setInterval(sync, 12000);
+        setInterval(render, 2500);
         sync(true);
     };
     start();

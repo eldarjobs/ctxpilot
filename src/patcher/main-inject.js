@@ -17,8 +17,27 @@
 
     let cpRestartPending = false;
     let cpMetaCache = { ts: 0, root: '', val: null };
+    let cpSlowCache = { ts: 0, root: '', doc: null, skills: null, checkpoints: null, worktrees: null, verifyCmd: null };
+    let cpTxCache = { key: '', ws: '', ctx: null, sig: null, tl: null };
     const cpTokenCache = new Map();
     const cpAutoAppliedWorkspaces = new Set();
+    const cpLastTurnAuto = new Map();
+
+    function cpLatestTxSig(brainDir) {
+        try {
+            let best = '';
+            let bestM = 0;
+            for (const ent of fsSync.readdirSync(brainDir, { withFileTypes: true })) {
+                if (!ent.isDirectory()) continue;
+                const p = path.join(brainDir, ent.name, '.system_generated', 'logs', 'transcript.jsonl');
+                try {
+                    const st = fsSync.statSync(p);
+                    if (st.size > 0 && st.mtimeMs > bestM) { bestM = st.mtimeMs; best = `${ent.name}:${st.size}:${st.mtimeMs}`; }
+                } catch {}
+            }
+            return best;
+        } catch { return ''; }
+    }
 
     function cpReadJson(p) { try { return JSON.parse(fsSync.readFileSync(p, 'utf8')); } catch { return null; } }
 
@@ -160,14 +179,28 @@
         return { titleHint, ...extra };
     }
 
-    async function cpState() {
+    async function cpState(force) {
         const opts = cpActiveOpts();
         const paths = cpGetPaths(opts);
+        const now = Date.now();
+        const freshSlow = force || cpSlowCache.root !== paths.workspaceDir || (now - cpSlowCache.ts > 30000);
         const mcp = cpDiscoverMcp(paths);
-        const ctx = cpAnalyzeContext(opts);
-        const doc = await cpRunDoctor({ ...opts, skipPatchCheck: true });
+        const txSig = cpLatestTxSig(paths.brainDir);
+        const freshTx = force || !txSig || cpTxCache.key !== txSig || cpTxCache.ws !== paths.workspaceDir;
+
+        const ctx = freshTx ? cpAnalyzeContext(opts) : cpTxCache.ctx;
+        const sig = freshTx ? cpGetChatSignals(opts) : cpTxCache.sig;
+        const tl = freshTx ? cpBuildTurnTimeline(opts) : cpTxCache.tl;
+        if (freshTx && txSig) cpTxCache = { key: txSig, ws: paths.workspaceDir, ctx, sig, tl };
+
+        const doc = freshSlow ? await cpRunDoctor({ ...opts, skipPatchCheck: true }) : cpSlowCache.doc;
+        const skills = freshSlow ? cpDiscoverSkills(paths) : cpSlowCache.skills;
+        const checkpoints = freshSlow ? cpListCheckpoints(opts).slice(0, 12) : cpSlowCache.checkpoints;
+        const worktrees = freshSlow ? cpListWorktrees(opts) : cpSlowCache.worktrees;
+        const verifyCmd = freshSlow ? cpDetectVerify(paths.workspaceDir) : cpSlowCache.verifyCmd;
+        if (freshSlow) cpSlowCache = { ts: now, root: paths.workspaceDir, doc, skills, checkpoints, worktrees, verifyCmd };
+
         const { actions, customPrompts } = cpDiscoverActions(paths.workspaceDir);
-        const skills = cpDiscoverSkills(paths);
         const profiles = cpListProfiles(opts);
         const hubCfg = cpReadJson(path.join(paths.workspaceDir, '.agents', 'hub.json'));
         const servers = mcp.servers
@@ -203,9 +236,13 @@
         const bloatAlert = (ctxPct >= 75 || ctx.staticOverheadTokensEst >= 15000) && heavyActive.length > 0
             ? { ctxPct, staticTok: ctx.staticOverheadTokensEst, topServers: heavyActive.slice(0, 2).map(s => s.id), savingsTok: heavyActive.slice(0, 2).reduce((n, s) => n + s.tokensEst, 0) }
             : null;
-        const tl = cpBuildTurnTimeline(opts);
         const latestTurn = tl.turns.length ? tl.turns[tl.turns.length - 1] : null;
-        if (latestTurn) cpMaybeAutoCheckpoint(latestTurn.turn, tl.convId, opts);
+        if (latestTurn && tl.convId && cpLastTurnAuto.get(tl.convId) !== latestTurn.turn) {
+            cpLastTurnAuto.set(tl.convId, latestTurn.turn);
+            setTimeout(() => {
+                try { cpMaybeAutoCheckpoint(latestTurn.turn, tl.convId, opts); cpSlowCache.ts = 0; } catch {}
+            }, 250);
+        }
         return {
             workspace: paths.workspaceDir,
             workspacePinned: fsSync.existsSync(path.join(paths.cfgDir, 'hub_workspace.json')),
@@ -224,15 +261,15 @@
             actions,
             customPrompts,
             fixes: cpListFixes(opts).slice(0, 15),
-            chatSignals: cpGetChatSignals(opts),
+            chatSignals: sig,
             timeline: tl.turns,
-            checkpoints: cpListCheckpoints(opts).slice(0, 12),
-            worktrees: cpListWorktrees(opts),
-            verifyCmd: cpDetectVerify(paths.workspaceDir),
+            checkpoints,
+            worktrees,
+            verifyCmd,
         };
     }
 
-    electron_1.ipcMain.handle('ctxpilot:state', async () => cpState());
+    electron_1.ipcMain.handle('ctxpilot:state', async (_e, force) => cpState(Boolean(force)));
     electron_1.ipcMain.handle('ctxpilot:token-history', async () => cpTokenHistory(cpGetPaths(cpActiveOpts()).brainDir, 12));
 
     electron_1.ipcMain.handle('ctxpilot:toggle-mcp', async (_e, p) => {
@@ -240,18 +277,18 @@
         if (p && p.parked) cpUnpark(p.id, opts);
         else if (p && p.id) cpPark(p.id, opts);
         cpRestartPending = true;
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:toggle-ro', async (_e, p) => {
         if (p && p.id) { cpSetRo(p.id, Boolean(p.enabled), cpActiveOpts()); cpRestartPending = true; }
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:apply-profile', async (_e, profile) => {
         const res = cpApplyProfile(profile, cpActiveOpts());
         if (res.changes.length > 0) cpRestartPending = true;
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:park-heavy', async (_e, ids) => {
@@ -259,7 +296,7 @@
         if (Array.isArray(ids)) {
             for (const id of ids) { try { cpPark(id, opts); cpRestartPending = true; } catch {} }
         }
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:toggle-rule', async (_e, p) => {
@@ -385,29 +422,30 @@
 
     electron_1.ipcMain.handle('ctxpilot:checkpoint-create', async (_e, label) => {
         cpCreateCheckpoint(label || 'manual', cpActiveOpts());
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:checkpoint-rewind', async (_e, id) => {
         cpRewindCheckpoint(id || null, cpActiveOpts());
         cpMetaCache.ts = 0;
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:checkpoint-rm', async (_e, id) => {
         if (id) cpDropCheckpoint(id, cpActiveOpts());
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:worktree-subchat', async (_e, p) => {
         const res = cpCreateWorktreeSubChat(p && p.topic, cpActiveOpts({ conv: p && p.conv }));
         try { if (electron_1.clipboard && res.markdown) electron_1.clipboard.writeText(res.markdown); } catch {}
+        cpSlowCache.ts = 0;
         return res;
     });
 
     electron_1.ipcMain.handle('ctxpilot:worktree-rm', async (_e, wtPath) => {
         if (wtPath) cpRemoveWorktree(wtPath, cpActiveOpts());
-        return cpState();
+        return cpState(true);
     });
 
     electron_1.ipcMain.handle('ctxpilot:verify', async () => cpRunVerify(cpActiveOpts()));
