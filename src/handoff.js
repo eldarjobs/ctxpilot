@@ -288,8 +288,11 @@ function buildSubChat(opts = {}) {
         touched = sig.filesEdited.slice(0, 8);
     }
 
+    const header = topic
+        ? [`# Sub-Chat: ${topic}`, `> Isolated Sub-Chat${convTag ? ` (branched from ${convTag})` : ''}`]
+        : [`# Isolated Sub-Chat${convTag ? ` (branched from ${convTag})` : ''}`];
     const lines = [
-        `# Isolated Sub-Chat${convTag ? ` (branched from ${convTag})` : ''}`,
+        ...header,
         `- Workspace: \`${paths.workspaceDir}\`${git.branch ? ` (branch \`${git.branch}\`)` : ''}`,
         `- Task / Fix: ${topic || 'Investigate and fix the side issue cleanly without main-chat context bloat.'}`,
     ];
@@ -344,7 +347,7 @@ function getChatSignals(opts = {}) {
                 }
             } catch {}
         }
-        const parentMatch = firstUser.match(/# (?:Isolated|Forked) Sub-Chat \((?:branched )?from ([a-f0-9-]+)[^)]*\)/i);
+        const parentMatch = firstUser.match(/(?:[#>]+\s*)?(?:Isolated|Forked) Sub-Chat \((?:branched )?from ([a-f0-9-]+)[^)]*\)/i);
         const isSubChat = Boolean(parentMatch);
         const parentConvId = parentMatch ? parentMatch[1] : '';
         if (!lastText) return { ...empty, isSubChat, parentConvId };

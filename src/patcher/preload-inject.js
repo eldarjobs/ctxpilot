@@ -49,7 +49,16 @@ function installCtxPilotOverviewHub() {
             input.dispatchEvent(new Event('input', { bubbles: true }));
         } else {
             if (replace) document.execCommand('selectAll', false);
-            document.execCommand('insertText', false, text);
+            let pasted = false;
+            try {
+                const dt = new DataTransfer();
+                dt.setData('text/plain', text);
+                const prev = input.textContent || '';
+                const ev = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true });
+                input.dispatchEvent(ev);
+                if (ev.defaultPrevented || (input.textContent || '') !== prev) pasted = true;
+            } catch {}
+            if (!pasted) document.execCommand('insertText', false, text);
         }
         return true;
     }
@@ -77,49 +86,56 @@ function installCtxPilotOverviewHub() {
 
     let cpSidebarRoot = null;
     const isPlaceholderTitle = (t) => !t || /^(new\s*(conversation|chat)|untitled)$/i.test(t);
+    const hasDirectText = (el, target) => (el.children.length === 0 && (el.textContent || '').trim() === target) ||
+        [...el.childNodes].some(n => n.nodeType === 3 && n.nodeValue && n.nodeValue.trim() === target);
 
     function getSidebarRoot() {
         if (cpSidebarRoot && cpSidebarRoot.isConnected) return cpSidebarRoot;
         const hub = document.getElementById('ctxpilot-overview-hub');
         const bar = document.getElementById('ctxpilot-inline-actions');
-        let projectsEl = null;
+        let anchorEl = null;
         const walk = (node, depth) => {
-            if (!node || depth > 8 || projectsEl) return;
+            if (!node || depth > 28 || anchorEl) return;
             for (const ch of node.children) {
                 if ((hub && ch === hub) || (bar && ch === bar)) continue;
                 const r = ch.getBoundingClientRect();
-                if (r.width === 0 || r.height === 0 || r.left > 280) continue;
-                if (ch.children.length === 0 && (ch.textContent || '').trim() === 'Projects' && r.left < 220) {
-                    projectsEl = ch;
+                if (r.width === 0 || r.height === 0 || r.left > 340) continue;
+                if (r.left < 240 && (hasDirectText(ch, 'Projects') || hasDirectText(ch, 'Pinned Conversations'))) {
+                    anchorEl = ch;
                     return;
                 }
                 walk(ch, depth + 1);
-                if (projectsEl) return;
+                if (anchorEl) return;
             }
         };
         walk(document.body, 0);
-        if (projectsEl) {
-            let cur = projectsEl.parentElement;
+        if (anchorEl) {
+            let best = null;
+            let cur = anchorEl.parentElement;
             while (cur && cur !== document.body) {
                 const r = cur.getBoundingClientRect();
-                if (r.left < 60 && r.width >= 150 && r.width <= 420 && r.height >= 250) {
-                    cpSidebarRoot = cur;
-                    return cur;
-                }
+                if (r.left < 60 && r.width >= 150 && r.width <= 440 && r.height >= 250) best = cur;
                 cur = cur.parentElement;
+            }
+            if (best) {
+                cpSidebarRoot = best;
+                return best;
             }
         }
         return null;
     }
 
     function findActiveHeaderTitle() {
+        const hub = document.getElementById('ctxpilot-overview-hub');
         const walkTop = (node, depth) => {
-            if (!node || depth > 5) return '';
+            if (!node || depth > 22) return '';
             for (const ch of node.children) {
-                if (ch.offsetTop > 56) continue;
+                if (hub && ch === hub) continue;
+                const r = ch.getBoundingClientRect();
+                if (r.height === 0 || r.top > 64) continue;
                 const t = (ch.textContent || '').replace(/\s+/g, ' ').trim();
                 const idx = t.indexOf(' / ');
-                if (idx > 0 && t.length < 140 && ch.offsetHeight <= 44 && ch.children.length <= 4) {
+                if (idx > 0 && t.length < 140 && r.height <= 44 && ch.children.length <= 4) {
                     return t.slice(idx + 3).trim();
                 }
                 const hit = walkTop(ch, depth + 1);
@@ -134,10 +150,10 @@ function installCtxPilotOverviewHub() {
         const root = getSidebarRoot();
         if (!root) return [];
         const hub = document.getElementById('ctxpilot-overview-hub');
-        let minTop = 140;
+        let minTop = 90;
         for (const el of root.querySelectorAll('span, div, button')) {
-            if (el.children.length === 0 && (el.textContent || '').trim() === 'Projects') {
-                minTop = Math.max(minTop, el.getBoundingClientRect().bottom + 4);
+            if (hasDirectText(el, 'Projects')) {
+                minTop = Math.max(minTop, el.getBoundingClientRect().bottom + 2);
                 break;
             }
         }
@@ -148,7 +164,7 @@ function installCtxPilotOverviewHub() {
             if (hub && hub.contains(el)) continue;
             if (rows.some(p => p.el.contains(el))) continue;
             const r = el.getBoundingClientRect();
-            if (r.top < minTop || r.width < 110 || r.height < 20 || r.height > 44) continue;
+            if (r.top < minTop || r.width < 110 || r.height < 18 || r.height > 48) continue;
             const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
             if (!txt || txt.length > 90 || skipRe.test(txt) || txt.toLowerCase() === wsName) continue;
             if (/[\\\/]/.test(txt) && txt.includes(':')) continue;
@@ -158,19 +174,19 @@ function installCtxPilotOverviewHub() {
     }
 
     function findActiveSidebarRow(rows) {
-        const hdr = findActiveHeaderTitle();
-        if (hdr) {
-            const needle = hdr.slice(0, 18).toLowerCase();
-            const byHdr = rows.find(r => r.text.toLowerCase().includes(needle));
-            if (byHdr) return byHdr;
-        }
-        for (const row of rows) {
+        const isHighlighted = (row) => {
             const cs = getComputedStyle(row.el);
             const hasBg = cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent';
             const hasBorder = cs.borderTopWidth && cs.borderTopWidth !== '0px' && cs.borderTopStyle !== 'none';
-            if (hasBg || hasBorder) return row;
+            return hasBg || hasBorder;
+        };
+        const hdr = findActiveHeaderTitle();
+        if (hdr) {
+            const needle = hdr.slice(0, 18).toLowerCase();
+            const matches = rows.filter(r => r.text.toLowerCase().includes(needle));
+            if (matches.length) return matches.find(isHighlighted) || matches[0];
         }
-        return rows[0] || null;
+        return rows.find(isHighlighted) || rows[0] || null;
     }
 
     const cleanSidebarTitle = (s) => String(s || '').replace(/\s+(now|\d+[smhd])$/i, '').trim().slice(0, 48);
@@ -191,43 +207,48 @@ function installCtxPilotOverviewHub() {
         saveSubLinks(list);
     }
 
+    function findRowTitleLeaf(rowEl) {
+        for (const el of rowEl.querySelectorAll('span, div, p')) {
+            if (el.children.length > 0) continue;
+            const t = (el.textContent || '').trim();
+            if (t.length >= 3 && !/^(now|\d+[smhd])$/i.test(t)) return el;
+        }
+        return rowEl;
+    }
+
     function ensureSubChildCss() {
         if (document.getElementById('ctxpilot-subchat-css')) return;
         const st = document.createElement('style');
         st.id = 'ctxpilot-subchat-css';
         st.textContent = `
             [data-cp-subchild="1"] {
-                margin-left: 14px !important;
-                border-left: 2px solid rgba(96, 165, 250, .75) !important;
+                margin-left: 12px !important;
+                border-left: 2px solid rgba(96, 165, 250, .85) !important;
                 border-radius: 0 6px 6px 0 !important;
                 padding-left: 6px !important;
             }
-            [data-cp-subchild="1"]::before {
+            [data-cp-subarrow="1"]::before {
                 content: "↳ ";
                 color: #60a5fa;
                 font-weight: 700;
-                margin-right: 4px;
-                flex: none;
+                margin-right: 3px;
             }
         `;
         document.head && document.head.appendChild(st);
     }
 
     function renderSidebarSubChats() {
-        const links = loadSubLinks();
-        if (!links.length || !document.body) {
-            document.querySelectorAll('[data-cp-subchild]').forEach(el => el.removeAttribute('data-cp-subchild'));
-            return;
-        }
-
+        if (!document.body) return;
         const rows = findSidebarConvRows();
+        const links = loadSubLinks();
         const sig = state && state.chatSignals;
         const active = rows.length ? findActiveSidebarRow(rows) : null;
         const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
+
         if (!isPlaceholderTitle(activeTitle)) {
             const isRecentNow = Boolean(active && /\snow$/i.test(active.text));
+            let changed = false;
             if ((sig && sig.isSubChat) || isRecentNow) {
-                let changed = false;
                 for (const l of links) {
                     const recent = Date.now() - (l.createdAt || 0) < 300000;
                     const matchParent = sig && sig.parentConvId ? l.parentConvId === sig.parentConvId : recent;
@@ -237,28 +258,60 @@ function installCtxPilotOverviewHub() {
                         break;
                     }
                 }
-                if (changed) saveSubLinks(links);
             }
+            if (sig && sig.isSubChat) {
+                const known = links.some(l => (l.childTitle && l.childTitle.slice(0, 16).toLowerCase() === activeTitle.slice(0, 16).toLowerCase()) || (sig.parentConvId && l.parentConvId === sig.parentConvId && l.childTitle));
+                if (!known) {
+                    links.unshift({
+                        id: Date.now().toString(36),
+                        parentTitle: sig.parentConvId || 'Parent Chat',
+                        parentConvId: sig.parentConvId || '',
+                        topic: activeTitle.slice(0, 32),
+                        childTitle: activeTitle,
+                        createdAt: Date.now(),
+                    });
+                    changed = true;
+                }
+            }
+            if (changed) saveSubLinks(links);
         }
 
         if (!rows.length) return;
         ensureSubChildCss();
         const wanted = new Set();
+        const wantedArrows = new Set();
+        const markRow = (row, tip) => {
+            wanted.add(row.el);
+            if (row.el.getAttribute('data-cp-subchild') !== '1') row.el.setAttribute('data-cp-subchild', '1');
+            if (tip && row.el.title !== tip) row.el.title = tip;
+            const leaf = findRowTitleLeaf(row.el);
+            wantedArrows.add(leaf);
+            if (leaf.getAttribute('data-cp-subarrow') !== '1') leaf.setAttribute('data-cp-subarrow', '1');
+        };
+
+        if (sig && sig.isSubChat && active) {
+            markRow(active, `Sub-chat of ${sig.parentConvId || 'parent chat'}`);
+        }
+        for (const r of rows) {
+            if (/^(isolated sub-chat|sub-chat:|wt:\s)/i.test(r.text)) {
+                markRow(r, 'Sub-chat session');
+            }
+        }
         for (const link of links) {
             if (!link.childTitle) continue;
             const childNeedle = link.childTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
             if (!childNeedle) continue;
-            const childRow = rows.find(r => r.text.toLowerCase().includes(childNeedle));
-            if (childRow) {
-                wanted.add(childRow.el);
-                if (childRow.el.getAttribute('data-cp-subchild') !== '1') {
-                    childRow.el.setAttribute('data-cp-subchild', '1');
-                    childRow.el.title = `Sub-chat of ${link.parentTitle} (${link.topic})`;
+            for (const r of rows) {
+                if (r.text.toLowerCase().includes(childNeedle)) {
+                    markRow(r, `Sub-chat of ${link.parentTitle} (${link.topic})`);
                 }
             }
         }
         document.querySelectorAll('[data-cp-subchild]').forEach(el => {
             if (!wanted.has(el)) el.removeAttribute('data-cp-subchild');
+        });
+        document.querySelectorAll('[data-cp-subarrow]').forEach(el => {
+            if (!wantedArrows.has(el)) el.removeAttribute('data-cp-subarrow');
         });
     }
 

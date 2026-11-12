@@ -65,6 +65,7 @@ describe('Handoff, Sub-Chat & Saved Fixes', () => {
     it('builds an isolated sub-chat prompt scoped to topic and touched files', () => {
         const sub = buildSubChat({ homeDir: home, workspaceDir: ws, topic: 'Investigate ASAR lock on Windows' });
         assert.equal(sub.convId, 'abc12345-conv');
+        assert.match(sub.markdown, /^# Sub-Chat: Investigate ASAR lock on Windows/);
         assert.match(sub.markdown, /Isolated Sub-Chat \(branched from abc12345\)/);
         assert.match(sub.markdown, /Investigate ASAR lock on Windows/);
         assert.match(sub.markdown, /src\/patcher\/index\.js/);
