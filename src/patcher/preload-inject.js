@@ -86,35 +86,39 @@ function installCtxPilotOverviewHub() {
 
     let cpSidebarRoot = null;
     const isPlaceholderTitle = (t) => !t || /^(new\s*(conversation|chat)|untitled)$/i.test(t);
-    const hasDirectText = (el, target) => (el.children.length === 0 && (el.textContent || '').trim() === target) ||
-        [...el.childNodes].some(n => n.nodeType === 3 && n.nodeValue && n.nodeValue.trim() === target);
+
+    function findSidebarAnchor() {
+        const newBtn = findNewChatButton();
+        if (newBtn) {
+            const r = newBtn.getBoundingClientRect();
+            if (r.width > 0 && r.left < 300) return newBtn;
+        }
+        try {
+            const xr = document.evaluate(
+                "//*[not(*) and (normalize-space(.)='Projects' or normalize-space(.)='Pinned Conversations')]",
+                document.body,
+                null,
+                XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+                null
+            );
+            for (let i = 0; i < xr.snapshotLength; i++) {
+                const el = xr.snapshotItem(i);
+                const r = el.getBoundingClientRect();
+                if (r.width > 0 && r.height > 0 && r.left < 260) return el;
+            }
+        } catch {}
+        return null;
+    }
 
     function getSidebarRoot() {
         if (cpSidebarRoot && cpSidebarRoot.isConnected) return cpSidebarRoot;
-        const hub = document.getElementById('ctxpilot-overview-hub');
-        const bar = document.getElementById('ctxpilot-inline-actions');
-        let anchorEl = null;
-        const walk = (node, depth) => {
-            if (!node || depth > 28 || anchorEl) return;
-            for (const ch of node.children) {
-                if ((hub && ch === hub) || (bar && ch === bar)) continue;
-                const r = ch.getBoundingClientRect();
-                if (r.width === 0 || r.height === 0 || r.left > 340) continue;
-                if (r.left < 240 && (hasDirectText(ch, 'Projects') || hasDirectText(ch, 'Pinned Conversations'))) {
-                    anchorEl = ch;
-                    return;
-                }
-                walk(ch, depth + 1);
-                if (anchorEl) return;
-            }
-        };
-        walk(document.body, 0);
+        const anchorEl = findSidebarAnchor();
         if (anchorEl) {
             let best = null;
             let cur = anchorEl.parentElement;
             while (cur && cur !== document.body) {
                 const r = cur.getBoundingClientRect();
-                if (r.left < 60 && r.width >= 150 && r.width <= 440 && r.height >= 250) best = cur;
+                if (r.width > 0 && r.left < 60 && r.width >= 150 && r.width <= 460 && r.height >= 250) best = cur;
                 cur = cur.parentElement;
             }
             if (best) {
@@ -128,14 +132,14 @@ function installCtxPilotOverviewHub() {
     function findActiveHeaderTitle() {
         const hub = document.getElementById('ctxpilot-overview-hub');
         const walkTop = (node, depth) => {
-            if (!node || depth > 22) return '';
+            if (!node || depth > 24) return '';
             for (const ch of node.children) {
                 if (hub && ch === hub) continue;
                 const r = ch.getBoundingClientRect();
-                if (r.height === 0 || r.top > 64) continue;
+                if (r.height > 0 && (r.top > 64 || r.bottom <= 0)) continue;
                 const t = (ch.textContent || '').replace(/\s+/g, ' ').trim();
                 const idx = t.indexOf(' / ');
-                if (idx > 0 && t.length < 140 && r.height <= 44 && ch.children.length <= 4) {
+                if (idx > 0 && t.length < 140 && r.height > 0 && r.height <= 44 && ch.children.length <= 4) {
                     return t.slice(idx + 3).trim();
                 }
                 const hit = walkTop(ch, depth + 1);
@@ -150,17 +154,19 @@ function installCtxPilotOverviewHub() {
         const root = getSidebarRoot();
         if (!root) return [];
         const hub = document.getElementById('ctxpilot-overview-hub');
-        let minTop = 90;
-        for (const el of root.querySelectorAll('span, div, button')) {
-            if (hasDirectText(el, 'Projects')) {
-                minTop = Math.max(minTop, el.getBoundingClientRect().bottom + 2);
+        let minTop = 80;
+        for (const el of root.querySelectorAll('span, div, button, p, h2, h3, label')) {
+            if (el.children.length > 0 || (el.textContent || '').trim() !== 'Projects') continue;
+            const pr = el.getBoundingClientRect();
+            if (pr.height > 0 && pr.height <= 40 && pr.bottom < window.innerHeight * 0.75) {
+                minTop = Math.max(minTop, pr.bottom + 2);
                 break;
             }
         }
         const rows = [];
         const skipRe = /^(\+\s*new|new chat|new conversation|inbox|automations|customizations|pinned|projects|settings|extensions|review|files|terminal|workspaces|open|see all)/i;
         const wsName = (state && state.meta && state.meta.name || '').toLowerCase();
-        for (const el of root.querySelectorAll('div, button, a, [role="button"], [role="listitem"]')) {
+        for (const el of root.querySelectorAll('div, button, a, li, [role="button"], [role="listitem"], [role="treeitem"]')) {
             if (hub && hub.contains(el)) continue;
             if (rows.some(p => p.el.contains(el))) continue;
             const r = el.getBoundingClientRect();
