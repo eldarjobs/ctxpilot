@@ -148,14 +148,41 @@ function installCtxPilotOverviewHub() {
         saveSubLinks(list);
     }
 
+    function ensureSubChildCss() {
+        if (document.getElementById('ctxpilot-subchat-css')) return;
+        const st = document.createElement('style');
+        st.id = 'ctxpilot-subchat-css';
+        st.textContent = `
+            [data-cp-subchild="1"] {
+                margin-left: 14px !important;
+                border-left: 2px solid rgba(96, 165, 250, .75) !important;
+                border-radius: 0 6px 6px 0 !important;
+                padding-left: 6px !important;
+            }
+            [data-cp-subchild="1"]::before {
+                content: "↳ ";
+                color: #60a5fa;
+                font-weight: 700;
+                margin-right: 4px;
+                flex: none;
+            }
+        `;
+        document.head && document.head.appendChild(st);
+    }
+
     function renderSidebarSubChats() {
+        const oldTree = document.getElementById('ctxpilot-sidebar-tree');
+        if (oldTree) oldTree.remove();
         document.querySelectorAll('[data-cp-sub-pad]').forEach(el => {
             el.style.marginBottom = '';
             delete el.dataset.cpSubPad;
         });
-        let tree = document.getElementById('ctxpilot-sidebar-tree');
+        document.querySelectorAll('[data-cp-subchild]').forEach(el => {
+            el.removeAttribute('data-cp-subchild');
+        });
+
         const links = loadSubLinks();
-        if (!links.length || !document.body) { if (tree) tree.remove(); return; }
+        if (!links.length || !document.body) return;
 
         const rows = findSidebarConvRows();
         const active = findActiveSidebarRow(rows);
@@ -173,68 +200,72 @@ function installCtxPilotOverviewHub() {
             if (changed) saveSubLinks(links);
         }
 
-        const groups = [];
+        ensureSubChildCss();
         for (const link of links) {
-            const needle = link.parentTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
-            const match = needle ? rows.find(r => r.text.toLowerCase().includes(needle) && r.rect.top >= 36 && r.rect.bottom <= window.innerHeight - 16) : null;
-            if (!match) continue;
-            let grp = groups.find(g => g.row === match);
-            if (!grp) { grp = { row: match, kids: [] }; groups.push(grp); }
-            if (grp.kids.length < 3) grp.kids.push(link);
+            if (!link.childTitle) continue;
+            const childNeedle = link.childTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
+            if (!childNeedle) continue;
+            const childRow = rows.find(r => r.text.toLowerCase().includes(childNeedle));
+            if (childRow) {
+                childRow.el.setAttribute('data-cp-subchild', '1');
+                childRow.el.title = `Sub-chat of ${link.parentTitle} (${link.topic})`;
+            }
         }
+    }
 
-        if (!groups.length) { if (tree) tree.remove(); return; }
-        if (!tree) {
-            tree = document.createElement('div');
-            tree.id = 'ctxpilot-sidebar-tree';
-            tree.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9998;font-family:-apple-system,"Segoe UI",Roboto,sans-serif;';
-            document.body.appendChild(tree);
+    function findProjectNewButton(wsName) {
+        if (!wsName) return null;
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const needle = wsName.toLowerCase();
+        for (const el of document.querySelectorAll('div, li')) {
+            if (hub && hub.contains(el)) continue;
+            const r = el.getBoundingClientRect();
+            if (r.left < 0 || r.left > 240 || r.top < 180 || r.height < 20 || r.height > 44) continue;
+            const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            if (txt !== needle && !txt.startsWith(needle + ' ')) continue;
+            const host = el.parentElement || el;
+            for (const btn of host.querySelectorAll('button, [role="button"]')) {
+                const hint = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''} ${(btn.textContent || '').trim()}`;
+                if (/new|add|create|\+/i.test(hint)) return btn;
+            }
         }
+        return null;
+    }
 
-        const html = [];
-        for (const g of groups) {
-            g.row.el.style.marginBottom = `${g.kids.length * 24 + 4}px`;
-            g.row.el.dataset.cpSubPad = '1';
-            g.kids.forEach((kid, idx) => {
-                const top = Math.round(g.row.rect.bottom + 2 + idx * 24);
-                const left = Math.round(g.row.rect.left + 14);
-                const w = Math.max(100, Math.round(g.row.rect.width - 14));
-                html.push(`<div class="cp-sb-kid" data-id="${esc(kid.id)}" style="pointer-events:auto;position:fixed;top:${top}px;left:${left}px;width:${w}px;height:22px;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:0 6px;border-left:2px solid rgba(96,165,250,.55);background:rgba(24,24,27,.85);border-radius:0 5px 5px 0;font-size:11px;color:#93c5fd;cursor:pointer;" title="Switch to sub-chat: ${esc(kid.topic)}">
-                    <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;">&#8627; ${esc(kid.topic)}</span>
-                    <button class="cp-sb-rm" data-id="${esc(kid.id)}" style="background:transparent;border:none;color:#71717a;font-size:10px;cursor:pointer;padding:0 2px;">x</button>
-                </div>`);
+    function trySelectActiveProject(wsName, cb) {
+        if (!wsName) { cb(); return; }
+        const hub = document.getElementById('ctxpilot-overview-hub');
+        const picker = [...document.querySelectorAll('button, [role="button"]')].find(el => {
+            if (hub && hub.contains(el)) return false;
+            const r = el.getBoundingClientRect();
+            if (r.width < 50 || r.height < 18) return false;
+            return /^(no project|select( a)? project|choose project)$/i.test((el.textContent || '').trim());
+        });
+        if (!picker) { cb(); return; }
+        picker.click();
+        setTimeout(() => {
+            const needle = wsName.toLowerCase();
+            const opt = [...document.querySelectorAll('button, [role="menuitem"], [role="option"], [role="button"], div, span')].find(el => {
+                if (hub && hub.contains(el)) return false;
+                const r = el.getBoundingClientRect();
+                if (r.width < 40 || r.height < 18 || r.height > 48) return false;
+                const t = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+                return t === needle || t.startsWith(needle + ' ');
             });
-        }
-        tree.innerHTML = html.join('');
-        tree.querySelectorAll('.cp-sb-kid').forEach(el => {
-            el.onclick = (e) => {
-                if (e.target && e.target.classList.contains('cp-sb-rm')) return;
-                const kid = loadSubLinks().find(x => x.id === el.dataset.id);
-                if (!kid) return;
-                const liveRows = findSidebarConvRows();
-                const targetNeedle = (kid.childTitle || kid.topic).replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
-                const targetRow = liveRows.find(r => r.text.toLowerCase().includes(targetNeedle));
-                if (targetRow) targetRow.el.click();
-                else flashStatus(`Sub-chat "${kid.topic}" not found in sidebar yet`);
-            };
-        });
-        tree.querySelectorAll('.cp-sb-rm').forEach(btn => {
-            btn.onclick = (e) => {
-                e.stopPropagation();
-                saveSubLinks(loadSubLinks().filter(x => x.id !== btn.dataset.id));
-                renderSidebarSubChats();
-            };
-        });
+            if (opt) opt.click();
+            setTimeout(cb, 160);
+        }, 180);
     }
 
     function openNewChatWithPrompt(text, label, subTopicMeta) {
         if (subTopicMeta !== undefined) recordSubChatLink(subTopicMeta.topic, subTopicMeta.res);
         try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text); } catch {}
-        const newBtn = findNewChatButton();
+        const wsName = (state && state.meta && state.meta.name) || '';
+        const newBtn = findProjectNewButton(wsName) || findNewChatButton();
         if (newBtn) {
             newBtn.click();
             flashStatus(`${label} copied — seeding New Chat...`);
-            setTimeout(() => { insertTextIntoChat(text, true); }, 320);
+            setTimeout(() => trySelectActiveProject(wsName, () => insertTextIntoChat(text, true)), 260);
         } else {
             flashStatus(`${label} copied — open New Chat & Ctrl+V`);
         }
@@ -526,7 +557,10 @@ function installCtxPilotOverviewHub() {
         const failBtn = 'background:rgba(239,68,68,.16);border:1px solid rgba(239,68,68,.45);color:#fca5a5;border-radius:4px;font-weight:600;cursor:pointer;';
 
         const actions = [];
-        if (sig.isSubChat) actions.push(pill('cp-bar-subresult', `Copy Result -> ${sig.parentConvId || 'Parent'}`, okBtn, 'Copy sub-chat summary to paste back into the parent chat'));
+        if (sig.isSubChat) {
+            actions.push(pill('cp-bar-parent', '<- Parent', S.ghost, `Switch back to parent conversation (${sig.parentConvId || 'main'})`));
+            actions.push(pill('cp-bar-subresult', `Copy Result -> ${sig.parentConvId || 'Parent'}`, okBtn, 'Copy sub-chat summary to paste back into the parent chat'));
+        }
         if (sig.asksProceed) actions.push(pill('cp-bar-proceed', 'Proceed', S.btn, 'Send "Proceed with the next step."'));
         if (state.verifyCmd && (m.dirtyCount > 0 || verifyState)) {
             if (verifyState && verifyState.running) actions.push(pill('cp-bar-verify', 'Verifying...', S.ghost, `Running ${state.verifyCmd}`));
@@ -565,6 +599,14 @@ function installCtxPilotOverviewHub() {
             if (!cp || !window.confirm(`Rewind working tree to checkpoint "${cp.label}"?`)) return;
             state = await invoke('ctxpilot:checkpoint-rewind', cp.id) || state;
             flashStatus(`Rewound to ${cp.label}`);
+        });
+        bind('#cp-bar-parent', () => {
+            const activeTitle = cleanSidebarTitle(findActiveHeaderTitle());
+            const link = loadSubLinks().find(l => (l.childTitle && activeTitle && l.childTitle.slice(0, 16).toLowerCase() === activeTitle.slice(0, 16).toLowerCase()) || (sig.parentConvId && l.parentConvId === sig.parentConvId));
+            const needle = link && link.parentTitle ? link.parentTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase() : '';
+            const target = needle ? findSidebarConvRows().find(r => r.text.toLowerCase().includes(needle)) : null;
+            if (target) target.el.click();
+            else flashStatus(`Click parent "${(link && link.parentTitle) || sig.parentConvId || 'chat'}" in sidebar`);
         });
         bind('#cp-bar-subresult', async () => {
             const res = await invoke('ctxpilot:subchat-result', {});
