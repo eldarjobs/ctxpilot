@@ -1,0 +1,34 @@
+{
+  "name": "ctxpilot",
+  "version": "0.1.0",
+  "description": "Unofficial read-only context budget analyzer, MCP health checker, and secret leak scanner for Antigravity workspaces.",
+  "bin": {
+    "ctxpilot": "./bin/ctxpilot.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "LICENSE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "keywords": [
+    "antigravity",
+    "mcp",
+    "context-engineering",
+    "doctor",
+    "cli",
+    "secrets"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/eldarjobs/ctxpilot.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
