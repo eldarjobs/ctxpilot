@@ -197,10 +197,13 @@ function installCtxPilotOverviewHub() {
 
     const cleanSidebarTitle = (s) => String(s || '').replace(/\s+(now|\d+[smhd])$/i, '').trim().slice(0, 48);
 
+    let lastNormalChatTitle = '';
+
     function recordSubChatLink(topic, res) {
         const rows = findSidebarConvRows();
         const active = findActiveSidebarRow(rows);
-        const parentTitle = (active ? cleanSidebarTitle(active.text) : cleanSidebarTitle(findActiveHeaderTitle())) || 'Parent Chat';
+        const parentTitle = (active ? cleanSidebarTitle(active.text) : cleanSidebarTitle(findActiveHeaderTitle())) || lastNormalChatTitle || 'Parent Chat';
+        const knownBefore = rows.map(r => cleanSidebarTitle(r.text).toLowerCase()).filter(Boolean).slice(0, 60);
         const list = loadSubLinks();
         list.unshift({
             id: Date.now().toString(36),
@@ -208,6 +211,7 @@ function installCtxPilotOverviewHub() {
             parentConvId: (res && res.convId ? String(res.convId) : '').slice(0, 8),
             topic: String(topic || 'Side task').trim().slice(0, 40) || 'Side task',
             childTitle: '',
+            knownBefore,
             createdAt: Date.now(),
         });
         saveSubLinks(list);
@@ -227,6 +231,10 @@ function installCtxPilotOverviewHub() {
         const st = document.createElement('style');
         st.id = 'ctxpilot-subchat-css';
         st.textContent = `
+            [data-cp-flexcol="1"] {
+                display: flex !important;
+                flex-direction: column !important;
+            }
             [data-cp-subchild="1"] {
                 margin-left: 12px !important;
                 border-left: 2px solid rgba(96, 165, 250, .85) !important;
@@ -243,6 +251,67 @@ function installCtxPilotOverviewHub() {
         document.head && document.head.appendChild(st);
     }
 
+    function findSharedListPair(parentEl, childEl) {
+        let p = parentEl;
+        for (let i = 0; i < 3 && p && p.parentElement; i++, p = p.parentElement) {
+            let c = childEl;
+            for (let j = 0; j < 3 && c && c.parentElement; j++, c = c.parentElement) {
+                if (p.parentElement === c.parentElement && p !== c) {
+                    return { listEl: p.parentElement, parentItem: p, childItem: c };
+                }
+            }
+        }
+        return null;
+    }
+
+    function applySubChatOrder(pairs) {
+        const orderedEls = new Set();
+        const usedFlex = new Set();
+        const byList = new Map();
+        for (const { parentEl, childEl } of pairs) {
+            const shared = findSharedListPair(parentEl, childEl);
+            if (!shared) continue;
+            const { listEl, parentItem, childItem } = shared;
+            if (listEl.children.length < 2 || listEl.children.length > 80) continue;
+            if (!byList.has(listEl)) byList.set(listEl, []);
+            byList.get(listEl).push({ parentItem, childItem });
+        }
+        for (const [listEl, items] of byList.entries()) {
+            const cs = getComputedStyle(listEl);
+            const isFlexCol = cs.display.includes('flex') && cs.flexDirection === 'column';
+            if (!isFlexCol) {
+                const hasText = [...listEl.childNodes].some(n => n.nodeType === 3 && n.nodeValue && n.nodeValue.trim());
+                if (cs.display !== 'block' || hasText) continue;
+                listEl.setAttribute('data-cp-flexcol', '1');
+                usedFlex.add(listEl);
+            }
+            const children = [...listEl.children];
+            const baseOrder = new Map();
+            children.forEach((ch, idx) => baseOrder.set(ch, idx * 20));
+            const childCounts = new Map();
+            const override = new Map();
+            for (const { parentItem, childItem } of items) {
+                const pBase = baseOrder.get(parentItem);
+                if (pBase == null || override.has(childItem)) continue;
+                const n = (childCounts.get(parentItem) || 0) + 1;
+                childCounts.set(parentItem, n);
+                override.set(childItem, pBase + n);
+            }
+            children.forEach((ch, idx) => {
+                const ord = String(override.has(ch) ? override.get(ch) : idx * 20);
+                if (ch.style.order !== ord) ch.style.order = ord;
+                ch.setAttribute('data-cp-ordered', '1');
+                orderedEls.add(ch);
+            });
+        }
+        document.querySelectorAll('[data-cp-ordered]').forEach(el => {
+            if (!orderedEls.has(el)) { el.style.order = ''; el.removeAttribute('data-cp-ordered'); }
+        });
+        document.querySelectorAll('[data-cp-flexcol]').forEach(el => {
+            if (!usedFlex.has(el)) el.removeAttribute('data-cp-flexcol');
+        });
+    }
+
     function renderSidebarSubChats() {
         if (!document.body) return;
         const rows = findSidebarConvRows();
@@ -250,16 +319,35 @@ function installCtxPilotOverviewHub() {
         const sig = state && state.chatSignals;
         const active = rows.length ? findActiveSidebarRow(rows) : null;
         const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
+        if (!sig?.isSubChat && !isPlaceholderTitle(activeTitle)) lastNormalChatTitle = activeTitle;
 
+        let changed = false;
+        if (rows.length) {
+            for (const l of links) {
+                if (l.childTitle || Date.now() - (l.createdAt || 0) >= 300000) continue;
+                if (Array.isArray(l.knownBefore) && l.knownBefore.length) {
+                    const beforeSet = new Set(l.knownBefore);
+                    const createdRow = rows.find(r => {
+                        const t = cleanSidebarTitle(r.text);
+                        return !isPlaceholderTitle(t) && t !== l.parentTitle && !beforeSet.has(t.toLowerCase());
+                    });
+                    if (createdRow) {
+                        l.childTitle = cleanSidebarTitle(createdRow.text);
+                        delete l.knownBefore;
+                        changed = true;
+                    }
+                }
+            }
+        }
         if (!isPlaceholderTitle(activeTitle)) {
             const isRecentNow = Boolean(active && /\snow$/i.test(active.text));
-            let changed = false;
             if ((sig && sig.isSubChat) || isRecentNow) {
                 for (const l of links) {
                     const recent = Date.now() - (l.createdAt || 0) < 300000;
                     const matchParent = sig && sig.parentConvId ? l.parentConvId === sig.parentConvId : recent;
                     if (!l.childTitle && activeTitle !== l.parentTitle && (matchParent || recent)) {
                         l.childTitle = activeTitle;
+                        delete l.knownBefore;
                         changed = true;
                         break;
                     }
@@ -270,7 +358,7 @@ function installCtxPilotOverviewHub() {
                 if (!known) {
                     links.unshift({
                         id: Date.now().toString(36),
-                        parentTitle: sig.parentConvId || 'Parent Chat',
+                        parentTitle: lastNormalChatTitle || sig.parentConvId || 'Parent Chat',
                         parentConvId: sig.parentConvId || '',
                         topic: activeTitle.slice(0, 32),
                         childTitle: activeTitle,
@@ -279,13 +367,14 @@ function installCtxPilotOverviewHub() {
                     changed = true;
                 }
             }
-            if (changed) saveSubLinks(links);
         }
+        if (changed) saveSubLinks(links);
 
         if (!rows.length) return;
         ensureSubChildCss();
         const wanted = new Set();
         const wantedArrows = new Set();
+        const orderPairs = [];
         const markRow = (row, tip) => {
             wanted.add(row.el);
             if (row.el.getAttribute('data-cp-subchild') !== '1') row.el.setAttribute('data-cp-subchild', '1');
@@ -307,12 +396,16 @@ function installCtxPilotOverviewHub() {
             if (!link.childTitle) continue;
             const childNeedle = link.childTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
             if (!childNeedle) continue;
+            const pNeedle = (link.parentTitle || '').replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
+            const parentRow = pNeedle ? rows.find(r => r.text.toLowerCase().includes(pNeedle)) : null;
             for (const r of rows) {
                 if (r.text.toLowerCase().includes(childNeedle)) {
                     markRow(r, `Sub-chat of ${link.parentTitle} (${link.topic})`);
+                    if (parentRow && parentRow.el !== r.el) orderPairs.push({ parentEl: parentRow.el, childEl: r.el });
                 }
             }
         }
+        applySubChatOrder(orderPairs);
         document.querySelectorAll('[data-cp-subchild]').forEach(el => {
             if (!wanted.has(el)) el.removeAttribute('data-cp-subchild');
         });
