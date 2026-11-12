@@ -19,6 +19,25 @@ function git(args, cwd, envExtra) {
     }).trim();
 }
 
+function findGitDirFast(startDir) {
+    let cur = startDir ? path.resolve(startDir) : '';
+    for (let i = 0; i < 8 && cur; i++) {
+        const dotGit = path.join(cur, '.git');
+        try {
+            const st = fs.statSync(dotGit);
+            if (st.isDirectory()) return dotGit;
+            if (st.isFile()) {
+                const m = fs.readFileSync(dotGit, 'utf8').match(/^gitdir:\s*(.+)$/m);
+                if (m) return path.isAbsolute(m[1].trim()) ? m[1].trim() : path.resolve(cur, m[1].trim());
+            }
+        } catch {}
+        const parent = path.dirname(cur);
+        if (parent === cur) break;
+        cur = parent;
+    }
+    return null;
+}
+
 function getRepoInfo(workspaceDir) {
     const root = git(['rev-parse', '--show-toplevel'], workspaceDir);
     const rawGitDir = git(['rev-parse', '--git-dir'], root);
@@ -106,8 +125,8 @@ function maybeAutoCheckpoint(turnNumber, convId, opts = {}) {
 function listCheckpoints(opts = {}) {
     const paths = getPaths(opts);
     try {
-        const repo = getRepoInfo(paths.workspaceDir);
-        return readMeta(repo.gitDir);
+        const gitDir = findGitDirFast(paths.workspaceDir);
+        return gitDir ? readMeta(gitDir) : [];
     } catch {
         return [];
     }
@@ -179,6 +198,8 @@ function createWorktreeSubChat(topic, opts = {}) {
 function listWorktrees(opts = {}) {
     const paths = getPaths(opts);
     try {
+        const gitDir = findGitDirFast(paths.workspaceDir);
+        if (!gitDir || !fs.existsSync(path.join(gitDir, 'worktrees'))) return [];
         const repo = getRepoInfo(paths.workspaceDir);
         const raw = git(['worktree', 'list', '--porcelain'], repo.root);
         const blocks = raw.split(/\r?\n\r?\n/).filter(Boolean);

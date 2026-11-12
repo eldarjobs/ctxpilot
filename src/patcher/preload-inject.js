@@ -74,40 +74,65 @@ function installCtxPilotOverviewHub() {
         try { localStorage.setItem('ctxPilotSubChatLinks', JSON.stringify(list.slice(0, 15))); } catch {}
     }
 
-    function findActiveHeaderTitle() {
-        for (const el of document.querySelectorAll('div, span')) {
-            const r = el.getBoundingClientRect();
-            if (r.top < 0 || r.top > 48 || r.left < 120 || r.height > 36 || r.width < 80) continue;
-            const t = (el.textContent || '').replace(/\s+/g, ' ').trim();
-            const idx = t.indexOf(' / ');
-            if (idx > 0 && t.length < 140 && el.children.length <= 4) {
-                return t.slice(idx + 3).trim();
+    let cpSidebarRoot = null;
+
+    function getSidebarRoot() {
+        if (cpSidebarRoot && cpSidebarRoot.isConnected) return cpSidebarRoot;
+        const walk = (node, depth) => {
+            if (!node || depth > 5) return null;
+            for (const ch of node.children) {
+                const w = ch.offsetWidth, h = ch.offsetHeight;
+                if (w >= 170 && w <= 360 && h >= 400 && ch.offsetLeft < 40 && (ch.textContent || '').includes('Projects')) {
+                    if (ch.children.length >= 2) return ch;
+                }
+                const hit = walk(ch, depth + 1);
+                if (hit) return hit;
             }
-        }
-        return '';
+            return null;
+        };
+        cpSidebarRoot = walk(document.body, 0);
+        return cpSidebarRoot;
+    }
+
+    function findActiveHeaderTitle() {
+        const walkTop = (node, depth) => {
+            if (!node || depth > 5) return '';
+            for (const ch of node.children) {
+                if (ch.offsetTop > 56) continue;
+                const t = (ch.textContent || '').replace(/\s+/g, ' ').trim();
+                const idx = t.indexOf(' / ');
+                if (idx > 0 && t.length < 140 && ch.offsetHeight <= 44 && ch.children.length <= 4) {
+                    return t.slice(idx + 3).trim();
+                }
+                const hit = walkTop(ch, depth + 1);
+                if (hit) return hit;
+            }
+            return '';
+        };
+        return walkTop(document.body, 0);
     }
 
     function findSidebarConvRows() {
+        const root = getSidebarRoot();
+        if (!root) return [];
         const hub = document.getElementById('ctxpilot-overview-hub');
-        const bar = document.getElementById('ctxpilot-inline-actions');
-        const tree = document.getElementById('ctxpilot-sidebar-tree');
-        let minTop = 240;
-        for (const el of document.querySelectorAll('div, span, button')) {
-            const r = el.getBoundingClientRect();
-            if (r.left < 0 || r.left > 180 || r.top < 60 || r.height > 32) continue;
-            if ((el.textContent || '').trim() === 'Projects') { minTop = Math.max(minTop, r.bottom + 4); break; }
+        let minTop = 200;
+        for (const el of root.querySelectorAll('span, div, button')) {
+            if (el.children.length === 0 && (el.textContent || '').trim() === 'Projects') {
+                minTop = Math.max(minTop, el.getBoundingClientRect().bottom + 4);
+                break;
+            }
         }
         const rows = [];
         const skipRe = /^(\+\s*new|new chat|new conversation|inbox|automations|customizations|pinned|projects|settings|extensions|review|files|terminal|workspaces|open|see all)/i;
         const wsName = (state && state.meta && state.meta.name || '').toLowerCase();
-        for (const el of document.querySelectorAll('div, button, a, [role="button"], [role="listitem"]')) {
-            if ((hub && hub.contains(el)) || (bar && bar.contains(el)) || (tree && tree.contains(el))) continue;
+        for (const el of root.querySelectorAll('button, a, [role="button"], [role="listitem"], [tabindex]')) {
+            if (hub && hub.contains(el)) continue;
             const r = el.getBoundingClientRect();
-            if (r.top < minTop || r.left < 0 || r.left > 240 || r.width < 110 || r.width > 300 || r.height < 22 || r.height > 42) continue;
+            if (r.top < minTop || r.width < 110 || r.height < 22 || r.height > 44) continue;
             const txt = (el.textContent || '').replace(/\s+/g, ' ').trim();
             if (!txt || txt.length > 90 || skipRe.test(txt) || txt.toLowerCase() === wsName) continue;
             if (/[\\\/]/.test(txt) && txt.includes(':')) continue;
-            if (el.querySelector('[role="listitem"], [role="button"]') && el.children.length > 3) continue;
             rows.push({ el, rect: r, text: txt });
         }
         return rows;
@@ -171,65 +196,46 @@ function installCtxPilotOverviewHub() {
     }
 
     function renderSidebarSubChats() {
-        const oldTree = document.getElementById('ctxpilot-sidebar-tree');
-        if (oldTree) oldTree.remove();
-        document.querySelectorAll('[data-cp-sub-pad]').forEach(el => {
-            el.style.marginBottom = '';
-            delete el.dataset.cpSubPad;
-        });
-        document.querySelectorAll('[data-cp-subchild]').forEach(el => {
-            el.removeAttribute('data-cp-subchild');
-        });
-
         const links = loadSubLinks();
         if (!links.length || !document.body) return;
 
         const rows = findSidebarConvRows();
-        const active = findActiveSidebarRow(rows);
-        const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
+        if (!rows.length) return;
         const sig = state && state.chatSignals;
-        if (sig && sig.isSubChat && activeTitle) {
-            let changed = false;
-            for (const l of links) {
-                if (!l.childTitle && activeTitle !== l.parentTitle && (!sig.parentConvId || l.parentConvId === sig.parentConvId)) {
-                    l.childTitle = activeTitle;
-                    changed = true;
-                    break;
+        if (sig && sig.isSubChat) {
+            const active = findActiveSidebarRow(rows);
+            const activeTitle = cleanSidebarTitle((active && active.text) || findActiveHeaderTitle());
+            if (activeTitle) {
+                let changed = false;
+                for (const l of links) {
+                    if (!l.childTitle && activeTitle !== l.parentTitle && (!sig.parentConvId || l.parentConvId === sig.parentConvId)) {
+                        l.childTitle = activeTitle;
+                        changed = true;
+                        break;
+                    }
                 }
+                if (changed) saveSubLinks(links);
             }
-            if (changed) saveSubLinks(links);
         }
 
         ensureSubChildCss();
+        const wanted = new Set();
         for (const link of links) {
             if (!link.childTitle) continue;
             const childNeedle = link.childTitle.replace(/\.{3}$/, '').slice(0, 18).toLowerCase();
             if (!childNeedle) continue;
             const childRow = rows.find(r => r.text.toLowerCase().includes(childNeedle));
             if (childRow) {
-                childRow.el.setAttribute('data-cp-subchild', '1');
-                childRow.el.title = `Sub-chat of ${link.parentTitle} (${link.topic})`;
+                wanted.add(childRow.el);
+                if (childRow.el.getAttribute('data-cp-subchild') !== '1') {
+                    childRow.el.setAttribute('data-cp-subchild', '1');
+                    childRow.el.title = `Sub-chat of ${link.parentTitle} (${link.topic})`;
+                }
             }
         }
-    }
-
-    function findProjectNewButton(wsName) {
-        if (!wsName) return null;
-        const hub = document.getElementById('ctxpilot-overview-hub');
-        const needle = wsName.toLowerCase();
-        for (const el of document.querySelectorAll('div, li')) {
-            if (hub && hub.contains(el)) continue;
-            const r = el.getBoundingClientRect();
-            if (r.left < 0 || r.left > 240 || r.top < 180 || r.height < 20 || r.height > 44) continue;
-            const txt = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
-            if (txt !== needle && !txt.startsWith(needle + ' ')) continue;
-            const host = el.parentElement || el;
-            for (const btn of host.querySelectorAll('button, [role="button"]')) {
-                const hint = `${btn.getAttribute('aria-label') || ''} ${btn.getAttribute('title') || ''} ${(btn.textContent || '').trim()}`;
-                if (/new|add|create|\+/i.test(hint)) return btn;
-            }
-        }
-        return null;
+        document.querySelectorAll('[data-cp-subchild]').forEach(el => {
+            if (!wanted.has(el)) el.removeAttribute('data-cp-subchild');
+        });
     }
 
     function trySelectActiveProject(wsName, cb) {
@@ -238,34 +244,34 @@ function installCtxPilotOverviewHub() {
         const picker = [...document.querySelectorAll('button, [role="button"]')].find(el => {
             if (hub && hub.contains(el)) return false;
             const r = el.getBoundingClientRect();
-            if (r.width < 50 || r.height < 18) return false;
+            if (r.left < 200 || r.width < 50 || r.height < 18) return false;
             return /^(no project|select( a)? project|choose project)$/i.test((el.textContent || '').trim());
         });
         if (!picker) { cb(); return; }
         picker.click();
         setTimeout(() => {
             const needle = wsName.toLowerCase();
-            const opt = [...document.querySelectorAll('button, [role="menuitem"], [role="option"], [role="button"], div, span')].find(el => {
+            const opt = [...document.querySelectorAll('[role="menuitem"], [role="option"], [role="listbox"] button, [role="menu"] button')].find(el => {
                 if (hub && hub.contains(el)) return false;
                 const r = el.getBoundingClientRect();
-                if (r.width < 40 || r.height < 18 || r.height > 48) return false;
+                if (r.left < 200 || r.width < 40 || r.height < 18) return false;
                 const t = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
                 return t === needle || t.startsWith(needle + ' ');
             });
             if (opt) opt.click();
-            setTimeout(cb, 160);
-        }, 180);
+            setTimeout(cb, 180);
+        }, 200);
     }
 
     function openNewChatWithPrompt(text, label, subTopicMeta) {
         if (subTopicMeta !== undefined) recordSubChatLink(subTopicMeta.topic, subTopicMeta.res);
         try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text); } catch {}
         const wsName = (state && state.meta && state.meta.name) || '';
-        const newBtn = findProjectNewButton(wsName) || findNewChatButton();
+        const newBtn = findNewChatButton();
         if (newBtn) {
             newBtn.click();
             flashStatus(`${label} copied — seeding New Chat...`);
-            setTimeout(() => trySelectActiveProject(wsName, () => insertTextIntoChat(text, true)), 260);
+            setTimeout(() => trySelectActiveProject(wsName, () => insertTextIntoChat(text, true)), 280);
         } else {
             flashStatus(`${label} copied — open New Chat & Ctrl+V`);
         }
@@ -906,12 +912,13 @@ function installCtxPilotOverviewHub() {
         render(force);
     }
 
+    let clickRenderTimer = null;
     const start = () => {
         if (!document.body) { setTimeout(start, 200); return; }
-        document.addEventListener('click', () => setTimeout(render, 140), { passive: true });
+        document.addEventListener('click', () => { clearTimeout(clickRenderTimer); clickRenderTimer = setTimeout(render, 220); }, { passive: true });
         window.addEventListener('resize', renderActionBar, { passive: true });
-        setInterval(sync, 12000);
-        setInterval(render, 2500);
+        setInterval(sync, 15000);
+        setInterval(render, 4000);
         sync(true);
     };
     start();

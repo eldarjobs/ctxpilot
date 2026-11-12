@@ -3,7 +3,7 @@
     const cpCoreDir = __CTXPILOT_ROOT__;
     const cpOs = require('os');
     const cpSpawn = require('child_process').spawn;
-    const cpExecFileSync = require('child_process').execFileSync;
+    const cpExecFile = require('child_process').execFile;
     const { analyzeContext: cpAnalyzeContext } = require(path.join(cpCoreDir, 'context.js'));
     const { runDoctor: cpRunDoctor } = require(path.join(cpCoreDir, 'doctor.js'));
     const { getPaths: cpGetPaths, discoverMcp: cpDiscoverMcp, discoverRules: cpDiscoverRules, discoverSkills: cpDiscoverSkills, tryParseJson: cpTryParseJson } = require(path.join(cpCoreDir, 'discovery.js'));
@@ -85,16 +85,24 @@
         return { actions: actions.slice(0, 10), customPrompts };
     }
 
-    function cpMeta(root) {
-        if (cpMetaCache.root === root && cpMetaCache.val && Date.now() - cpMetaCache.ts < 8000) return cpMetaCache.val;
-        let branch = '', dirtyCount = 0, graphAgeHours = null;
+    function cpExecAsync(cmd, args, cwd) {
+        return new Promise((resolve) => {
+            cpExecFile(cmd, args, { cwd, encoding: 'utf8', windowsHide: true, timeout: 1500 }, (err, stdout) => {
+                resolve(err ? '' : String(stdout || '').trim());
+            });
+        });
+    }
+
+    async function cpMeta(root) {
+        if (cpMetaCache.root === root && cpMetaCache.val && Date.now() - cpMetaCache.ts < 20000) return cpMetaCache.val;
         const hooksActive = fsSync.existsSync(path.join(root, '.agents', 'hooks.json'));
         const mapFile = ['AGENTS.md', 'GEMINI.md', 'CLAUDE.md'].find(f => fsSync.existsSync(path.join(root, f))) || null;
-        try {
-            branch = cpExecFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-            const st = cpExecFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8', windowsHide: true, timeout: 1500, stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-            dirtyCount = st ? st.split(/\r?\n/).length : 0;
-        } catch {}
+        const [branch, st] = await Promise.all([
+            cpExecAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], root),
+            cpExecAsync('git', ['status', '--porcelain'], root),
+        ]);
+        const dirtyCount = st ? st.split(/\r?\n/).length : 0;
+        let graphAgeHours = null;
         try {
             const gf = path.join(root, 'graphify-out', 'graph.json');
             if (fsSync.existsSync(gf)) graphAgeHours = Math.round((Date.now() - fsSync.statSync(gf).mtimeMs) / 36e5);
@@ -248,7 +256,7 @@
             workspacePinned: fsSync.existsSync(path.join(paths.cfgDir, 'hub_workspace.json')),
             configPath: mcp.configFiles[0]?.path || paths.mcpConfigs[0],
             restartPending: cpRestartPending,
-            meta: cpMeta(paths.workspaceDir),
+            meta: await cpMeta(paths.workspaceDir),
             context: ctx,
             doctor: doc,
             servers,
