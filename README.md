@@ -1,14 +1,14 @@
 # ctxpilot
 
-> **See where your context window goes, catch leaked MCP secrets, and safely cut prompt bloat — without patching the app.**
+> **See where your context window goes, catch leaked MCP secrets, safely cut prompt bloat, and manage everything directly inside Antigravity's Overview sidebar.**
 
-`ctxpilot` (`ctx`) is an unofficial, zero-dependency CLI & **zero-patch Sidecar UI plugin** for Antigravity workspaces (`v0.2`).
+`ctxpilot` (`ctx`) is an unofficial, zero-dependency CLI & **Antigravity Overview Hub patcher** (`v0.3.0`).
 
 ---
 
 ## Why `ctxpilot`?
 
-- **Zero app patching:** Never modifies `app.asar`. Runs via CLI or Antigravity's official Sidecar UI Plugin (`SIDECAR_UI_ENTRYPOINT_AUX_PANE`).
+- **Native Overview Hub (`ctx patch`):** Injects the full `CTXPILOT` panel directly inside Antigravity's Overview sidebar (with `app.asar.bak` backup, SHA-256 verification of untouched files, and instant `ctx patch restore`).
 - **Zero telemetry:** Performs zero outbound network requests (unless you explicitly pass `--ping` to probe HTTP MCP endpoints).
 - **CI-ready secret hygiene:** Detects plaintext tokens/passwords in `mcp_config.json`, masks them with prefix-free labels (`[REDACTED: bearer-token]`), and exits non-zero on failures.
 
@@ -27,7 +27,7 @@ Or install globally (provides both `ctxpilot` and `ctx` commands):
 
 ```bash
 npm install -g github:eldarjobs/ctxpilot
-ctx ui install   # Installs zero-patch CtxPilot side-pane UI inside Antigravity
+ctx patch install --restart   # Injects CTXPILOT hub directly into Antigravity Overview
 ```
 
 ---
@@ -122,25 +122,15 @@ ctx patch status
 ctx patch restore --restart   # restore original app.asar.bak anytime
 ```
 
-### `ctx ui install` (Zero-Patch Antigravity Sidecar UI)
-
-Installs an official Antigravity Aux-Pane Sidecar Plugin at `~/.gemini/config/plugins/ctxpilot/` showing Context Budget, MCP toggles, `RO/RW` switches, Doctor findings, Rules, and Hooks right inside Antigravity — without touching `app.asar`.
-
-```bash
-ctx ui install
-ctx ui status
-ctx ui uninstall
-```
-
 ---
 
 ## Roadmap
 
 - **`v0.1`**: Read-only `doctor` + `context` + `SECURITY.md` (done)
-- **`v0.2`** (current): `ctx` alias, MCP profiles (`full`, `code-docs`, `db-ro`, `lean`), `park/unpark/ro/rw`, `--dry-run`, zero-patch Sidecar UI plugin
-- **`v0.3`**: Stack presets (`nextjs`, `dotnet-clean`) + benchmarked hooks (`<150 ms`)
-- **`v0.4`**: Team bundle export/import with fuzz-tested secret sanitizer
-- **`v1.0`**: Optional `--experimental-asar-patch` mode, npm provenance, SBOM
+- **`v0.2`**: `ctx` alias, MCP profiles (`full`, `code-docs`, `db-ro`, `lean`), `park/unpark/ro/rw`, `--dry-run` (done)
+- **`v0.3`** (current): Direct Antigravity Overview Hub injection via `ctx patch install | restore | status` with SHA-256 verification and `app.asar.bak` backup (done)
+- **`v0.4`**: Team bundle export/import with fuzz-tested secret sanitizer, stack presets (`nextjs`, `dotnet-clean`)
+- **`v1.0`**: npm provenance, SBOM
 
 ## Security & Compatibility
 

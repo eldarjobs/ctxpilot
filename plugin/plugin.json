@@ -1,6 +1,0 @@
-{
-  "name": "ctxpilot",
-  "displayName": "CtxPilot",
-  "version": "0.2.0",
-  "description": "Zero-patch context budget analyzer, MCP profile & RO/RW toggle manager, secret hygiene doctor, and rules/hooks panel."
-}

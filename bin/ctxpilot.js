@@ -3,7 +3,6 @@
 const { runDoctor, formatDoctor } = require('../src/doctor');
 const { analyzeContext, formatContext } = require('../src/context');
 const { parkServer, unparkServer, setReadonly, listProfiles, applyProfile } = require('../src/mcp-control');
-const { installSidecarPlugin, uninstallSidecarPlugin, statusSidecarPlugin } = require('../src/plugin-installer');
 const { patchStatus, patchInstall, patchRestore } = require('../src/patcher');
 const pkg = require('../package.json');
 
@@ -39,7 +38,6 @@ Usage:
   ctx rw       <server> [--dry-run] [--workspace <dir>]
   ctx profile  list | <name> [--dry-run] [--workspace <dir>]
   ctx patch    install | restore | status [--restart] [--dry-run] [--resources <dir>]
-  ctx ui       install | uninstall | status | serve [--dry-run]
 
 Flags:
   --dry-run        Preview config/file changes without writing
@@ -126,30 +124,6 @@ async function main() {
             return;
         }
         throw new Error(`Unknown patch subcommand: ${sub}`);
-    }
-
-    if (cmd === 'ui') {
-        const sub = arg || 'status';
-        if (sub === 'install') {
-            const res = installSidecarPlugin(flags);
-            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}Installed CtxPilot sidecar plugin at ${res.pluginDir}\nOpen inside Antigravity via sidecar URI: ${res.sidecarUri}`);
-            return;
-        }
-        if (sub === 'uninstall') {
-            const res = uninstallSidecarPlugin(flags);
-            console.log(flags.json ? JSON.stringify(res, null, 2) : `${res.dryRun ? '[DRY-RUN] ' : ''}${res.existed ? 'Removed' : 'Not installed'}: ${res.pluginDir}`);
-            return;
-        }
-        if (sub === 'status') {
-            const res = statusSidecarPlugin(flags);
-            console.log(flags.json ? JSON.stringify(res, null, 2) : `Sidecar UI plugin: ${res.installed ? 'installed' : 'not installed'} (${res.pluginDir})`);
-            return;
-        }
-        if (sub === 'serve') {
-            await import('../plugin/sidecars/ctxpilot_panel/server.mjs');
-            return;
-        }
-        throw new Error(`Unknown ui subcommand: ${sub}`);
     }
 
     console.error(`Unknown command: ${cmd}\nRun "ctx --help" for usage.`);
